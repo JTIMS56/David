@@ -7,9 +7,10 @@
  *  1. Heston stochastic variance:
  *       dv = κ_H(θ−v) dt + ξ√v dW_v          (CIR, Milstein)
  *
- *  2. Dirac-Telegraph price (stochastic-vol version):
- *       D(τ) = v/2,  c(τ) = √v
- *       (full variance — leverage enters as a separate grid shift, not diffusion)
+ *  2. Dirac-Telegraph price — independent component only:
+ *       D(τ) = (1−ρ²)·v/2,  c(τ) = √((1−ρ²)·v)
+ *       Heston decomposes dW_S = ρ·dW_v + √(1−ρ²)·dW⊥; the PDE models only
+ *       the independent part dW⊥. Using full v would double-count ρ²·v.
  *
  *  3. Regime-dependent Dirac mass:
  *       κ(v) = κ₀ + κ₁/v   (more ballistic in calm markets, diffusive in crises)
@@ -112,6 +113,15 @@ public:
         Real x_min  = -x_half, x_max = x_half;
         Real dx     = (x_max - x_min) / (N - 1);
 
+        // ── Heston variance decomposition ──────────────────────────────────────
+        // The Heston price shock decomposes as:
+        //   dW_S = ρ·dW_v  +  √(1−ρ²)·dW⊥    (independent components)
+        // The correlated part ρ·dW_v is captured by the leverage grid shift.
+        // The PDE evolves only the INDEPENDENT component: D_⊥ = (1−ρ²)·v/2.
+        // Using full v would double-count the correlated variance ρ²·v.
+        Real rho2   = in_.heston.rho * in_.heston.rho;
+        Real v_ind  = (1.0 - rho2);  // scale factor for independent component
+
         // ── CFL — use realistic worst-case vol: θ + 2·σ_v (stationary Heston) ──
         //   Stationary variance std dev: σ_v = ξ·√(θ/(2κ_H))  (Gamma distribution)
         Real sigma_v = in_.heston.xi
@@ -119,10 +129,8 @@ public:
                                    / (2.0 * std::max(in_.heston.kappa_H, 0.1)));
         Real v_ref  = in_.heston.theta + 2.0 * sigma_v;
         v_ref = std::max({v_ref, v0, in_.heston.theta, 1e-6});
-        // Full variance in D/c — leverage shift is applied separately, not via ν.
-        // No (1-ρ²) factor needed here.
-        Real D_ref  = v_ref / 2.0;
-        Real c_ref  = std::sqrt(v_ref);
+        Real D_ref  = v_ind * v_ref / 2.0;   // independent component only
+        Real c_ref  = std::sqrt(v_ind * v_ref);
         Real dt     = 0.45 * dx * dx / (2.0 * D_ref + c_ref * dx + 1e-15);
         int  nsteps = (int)std::ceil(T / dt);
         dt           = T / nsteps;
@@ -171,20 +179,23 @@ public:
                 Real vi = std::max(v_path[i], 1e-10);
                 Real zi = z_path[i];    // N(0,1) normalised increment
 
-                // 3. Dirac params for this step — full variance, small ν
-                Real D_i   = vi / 2.0;
-                Real c_i   = std::sqrt(vi);
+                // 3. Dirac params for this step — INDEPENDENT variance component only.
+                // The correlated part ρ·√v·dW_v is applied below as a grid shift.
+                // Using v_ind·v prevents double-counting the ρ²·v variance.
+                Real D_i   = v_ind * vi / 2.0;
+                Real c_i   = std::sqrt(v_ind * vi);
                 // κ₁/v is singular at v→0; cap at 50 to keep κ·h < 0.01 (RK4 stable).
                 // When Feller condition is violated (2κθ < ξ²), v touches 0 frequently,
                 // and κ₁/v would otherwise blow past RK4's |λh| < 2.785 stability limit.
                 Real kd_i  = std::min(in_.kappa0 + (vi > 1e-8 ? in_.kappa1 / vi : 0.0),
                                       50.0);
 
-                // ν = r − v/2 − λζ  (small; leverage applied as grid shift below)
+                // ν = r − v/2 − λζ  (full v for drift; leverage applied as shift below)
+                // Risk-neutral log-return drift is r − v/2 regardless of ρ decomposition.
                 Real nu_i  = (in_.r - vi / 2.0) - jump_comp;
                 nu_i = std::max(-nu_max, std::min(nu_max, nu_i));
 
-                // Adaptive sub-stepping: if v_i > v_ref, CFL is violated for dt.
+                // Adaptive sub-stepping: if v_i > v_ref (independent component), CFL violated.
                 Real dt_cfl_i = 0.45 * dx * dx / (2.0*D_i + c_i*dx + 1e-15);
                 int  n_sub    = (dt_cfl_i >= dt) ? 1
                               : std::min(32, (int)std::ceil(dt / dt_cfl_i));

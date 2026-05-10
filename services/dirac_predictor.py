@@ -285,8 +285,9 @@ class DiracPredictor:
         Five layers over the base Dirac model:
           1. Heston stochastic variance  (kappa_H, xi, rho)
           2. Stochastic Dirac diffusion  D=(1-ρ²)v/2, c=√((1-ρ²)v)
-          3. Regime-dependent mass       κ(v) = kappa0 + kappa1/v
-          4. Leverage-correlated drift   ρ·√v·dW_v enters as path drift
+             PDE uses only the independent Brownian component (avoids double-counting ρ²v)
+          3. Regime-dependent mass       κ(v) = min(kappa0 + kappa1/v, 50)
+          4. Leverage-correlated shift   Δx = ρ·√v·ΔW_v as grid shift (unconditionally stable)
           5. Kou double-exponential jumps (jump_lambda, jump_p_up, eta±)
 
         n_paths MC paths are averaged; ~300 gives good accuracy in <2s.
