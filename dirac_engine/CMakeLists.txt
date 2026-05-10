@@ -13,8 +13,8 @@ set(CMAKE_CXX_FLAGS_DEBUG   "-g -fsanitize=address,undefined")
 
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# ── Shared library (for Python ctypes) ───────────────────────────────────────
-add_library(dirac_fx SHARED src/capi.cpp)
+# ── Shared library (for Python ctypes) — Dirac + DHJ APIs ────────────────────
+add_library(dirac_fx SHARED src/capi.cpp src/dhj_capi.cpp)
 target_include_directories(dirac_fx PRIVATE include)
 set_target_properties(dirac_fx PROPERTIES
     OUTPUT_NAME "dirac_fx"
@@ -23,15 +23,18 @@ set_target_properties(dirac_fx PROPERTIES
 )
 
 # ── Static library ────────────────────────────────────────────────────────────
-add_library(dirac_fx_static STATIC src/capi.cpp)
+add_library(dirac_fx_static STATIC src/capi.cpp src/dhj_capi.cpp)
 target_include_directories(dirac_fx_static PRIVATE include)
 
-# ── Standalone demo executable ────────────────────────────────────────────────
+# ── Standalone demo executables ───────────────────────────────────────────────
 add_executable(dirac_demo examples/dirac_demo.cpp)
 target_include_directories(dirac_demo PRIVATE include)
 
+add_executable(dhj_demo examples/dhj_demo.cpp)
+target_include_directories(dhj_demo PRIVATE include)
+
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS dirac_fx dirac_demo
+install(TARGETS dirac_fx dirac_demo dhj_demo
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
@@ -41,5 +44,5 @@ install(DIRECTORY include/ DESTINATION include/dirac_fx)
 message(STATUS "DiracFX ${PROJECT_VERSION}")
 message(STATUS "  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ std    : C++${CMAKE_CXX_STANDARD}")
-message(STATUS "  Shared lib : dirac_fx (for Python ctypes)")
-message(STATUS "  Demo       : dirac_demo")
+message(STATUS "  Shared lib : dirac_fx (Dirac + DHJ APIs)")
+message(STATUS "  Demos      : dirac_demo  dhj_demo")

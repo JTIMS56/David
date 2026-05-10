@@ -1,16 +1,15 @@
 """
 DiracPredictor — Python ctypes wrapper for the C++ Dirac FX engine.
 
-Loads dirac_engine/build/dirac_fx.so and exposes predict() which runs the
-1+1D telegraph/Wilson-Dirac model and returns price distribution statistics.
+Exposes two models:
+  predict()     — pure 1+1D Dirac/Telegraph model (deterministic vol)
+  predict_dhj() — full Dirac-Heston-Jump hybrid (MC-PDE, stochastic vol + jumps)
 """
 import ctypes
 import os
 import logging
 from dataclasses import dataclass
 from typing import Optional
-
-import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +32,28 @@ _PAIR_PARAMS: dict[str, dict] = {
 _DEFAULT_KAPPA     = 2.0   # moderate Dirac mass (between wave and diffusion)
 _DEFAULT_DELTA_CP  = 0.0   # symmetric initial condition = BS IC
 _DEFAULT_N_SITES   = 400
+
+
+@dataclass
+class DHJPrediction:
+    prices:       list[float]
+    prob_dhj:     list[float]
+    prob_bs:      list[float]
+    mean_dhj:     float
+    mean_bs:      float
+    var_log_dhj:  float
+    var_log_bs:   float
+    call_dhj:     float
+    call_bs:      float
+    chiral_charge: float
+    avg_variance: float
+    n_steps:      int
+    n_paths:      int
+    horizon_days: float
+    kappa0:       float
+    xi:           float
+    rho:          float
+    jump_lambda:  float
 
 
 @dataclass
@@ -105,6 +126,33 @@ class DiracPredictor:
         ver = self._lib.dirac_version
         ver.restype  = None
         ver.argtypes = [ctypes.c_char_p, ctypes.c_int]
+
+        # ── DHJ C API ──────────────────────────────────────────────────────────
+        dhj = self._lib.dhj_predict
+        dhj.restype  = ctypes.c_int
+        dhj.argtypes = [
+            # Market
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            # Heston: kappa_H, theta, xi, rho, v0
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            ctypes.c_double, ctypes.c_double,
+            # Dirac: kappa0, kappa1, delta_cp
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            # Jumps: lambda, p_up, eta_plus, eta_minus
+            ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            # Lattice + MC
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+            # Output
+            ctypes.POINTER(ctypes.c_double),  # prices
+            ctypes.POINTER(ctypes.c_double),  # prob_dhj
+            ctypes.POINTER(ctypes.c_double),  # prob_bs
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_double),  # scalars [10]
+        ]
+
+        dver = self._lib.dhj_version
+        dver.restype  = None
+        dver.argtypes = [ctypes.c_char_p, ctypes.c_int]
 
     # ── Public API ─────────────────────────────────────────────────────────────
     def predict(
@@ -202,3 +250,90 @@ class DiracPredictor:
         buf = ctypes.create_string_buffer(256)
         self._lib.dirac_version(buf, 256)
         return buf.value.decode()
+
+    def dhj_version(self) -> str:
+        buf = ctypes.create_string_buffer(256)
+        self._lib.dhj_version(buf, 256)
+        return buf.value.decode()
+
+    def predict_dhj(
+        self,
+        pair: str,
+        spot: float,
+        horizon_days: float  = 30.0,
+        # Heston
+        kappa_H: float       = 1.5,
+        xi: float            = 0.30,
+        rho: float           = -0.25,
+        # Dirac
+        kappa0: float        = 1.0,
+        kappa1: float        = 0.002,
+        delta_cp: float      = 0.0,
+        # Jumps
+        jump_lambda: float   = 5.0,
+        jump_p_up: float     = 0.55,
+        jump_eta_plus: float = 100.0,   # mean up-jump = 1% (FX calibrated)
+        jump_eta_minus: float= 80.0,    # mean down-jump = 1.25%
+        # MC
+        n_paths: int         = 300,
+        n_sites: int         = 400,
+        seed: int            = 0,
+    ) -> "DHJPrediction":
+        """
+        Run the Dirac-Heston-Jump hybrid model.
+
+        Five layers over the base Dirac model:
+          1. Heston stochastic variance  (kappa_H, xi, rho)
+          2. Stochastic Dirac diffusion  D=(1-ρ²)v/2, c=√((1-ρ²)v)
+          3. Regime-dependent mass       κ(v) = kappa0 + kappa1/v
+          4. Leverage-correlated drift   ρ·√v·dW_v enters as path drift
+          5. Kou double-exponential jumps (jump_lambda, jump_p_up, eta±)
+
+        n_paths MC paths are averaged; ~300 gives good accuracy in <2s.
+        """
+        params = _PAIR_PARAMS.get(pair.upper(), {"sigma": 0.085, "r": 0.0500})
+        sigma  = params["sigma"]
+        r      = params["r"]
+        v0     = sigma * sigma
+        theta  = v0          # start at long-run variance = initial variance
+        T      = horizon_days / 365.0
+        n      = n_sites
+
+        prices_arr  = (ctypes.c_double * n)()
+        prob_dhj_arr= (ctypes.c_double * n)()
+        prob_bs_arr = (ctypes.c_double * n)()
+        scalars_arr = (ctypes.c_double * 10)()
+
+        n_fill = self._lib.dhj_predict(
+            spot, r, T,
+            kappa_H, theta, xi, rho, v0,
+            kappa0, kappa1, delta_cp,
+            jump_lambda, jump_p_up, jump_eta_plus, jump_eta_minus,
+            n, n_paths, ctypes.c_uint(seed),
+            prices_arr, prob_dhj_arr, prob_bs_arr,
+            n, scalars_arr,
+        )
+
+        if n_fill < 0:
+            raise RuntimeError(f"dhj_predict failed for pair={pair}")
+
+        return DHJPrediction(
+            prices        = list(prices_arr[:n_fill]),
+            prob_dhj      = list(prob_dhj_arr[:n_fill]),
+            prob_bs       = list(prob_bs_arr[:n_fill]),
+            mean_dhj      = scalars_arr[0],
+            mean_bs       = scalars_arr[1],
+            var_log_dhj   = scalars_arr[2],
+            var_log_bs    = scalars_arr[3],
+            call_dhj      = scalars_arr[4],
+            call_bs       = scalars_arr[5],
+            chiral_charge = scalars_arr[6],
+            avg_variance  = scalars_arr[7],
+            n_steps       = int(scalars_arr[8]),
+            n_paths       = int(scalars_arr[9]),
+            horizon_days  = horizon_days,
+            kappa0        = kappa0,
+            xi            = xi,
+            rho           = rho,
+            jump_lambda   = jump_lambda,
+        )

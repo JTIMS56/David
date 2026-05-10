@@ -47,13 +47,14 @@
 #include <algorithm>
 
 struct DiracParams {
-    Real D;        // diffusion coeff  = σ²/2
-    Real c;        // wave speed       = σ
-    Real kappa;    // flip / damping rate
-    Real gamma;    // chiral mixing rate (= kappa for probability conservation)
-    Real nu;       // log-return drift  = μ − r − σ²/2
-    Real r;        // risk-free rate (discounting)
-    Real dt;       // time step (used as max step; CFL enforced internally)
+    Real D;           // diffusion coeff  = σ²/2
+    Real c;           // wave speed       = σ
+    Real kappa;       // flip / damping rate
+    Real gamma;       // chiral mixing rate (= kappa for probability conservation)
+    Real nu;          // log-return drift  = μ − σ²/2
+    Real r;           // risk-free rate (discounting)
+    Real dt;          // time step (used as max step; CFL enforced internally)
+    bool upwind_nu = false; // use upwind (not central diff) for ν — required when |ν|*dt/dx > 0.5
 };
 
 class WilsonDiracEvolver {
@@ -85,7 +86,15 @@ public:
             // ── ψ₊ (right-mover: advects in +x direction, upwind = backward ∇⁻)
             Real diff_p    = p_.D    * (pp - 2.0*pc + pm) * inv_dx2;
             Real upwind_p  = -p_.c   * (pc - pm)           * inv_dx;   // −c ∇⁻
-            Real drift_p   = -p_.nu  * (pp - pm)           * (0.5 * inv_dx);  // −ν ∇⁰ (continuity sign)
+            // Drift −ν ∂_x ψ: central diff (2nd order) or upwind (1st, stable for large ν)
+            Real drift_p, drift_m;
+            if (!p_.upwind_nu) {
+                drift_p = -p_.nu * (pp - pm) * (0.5 * inv_dx);   // central ∇⁰
+            } else if (p_.nu >= 0) {                               // rightward: backward ∇⁻
+                drift_p = -p_.nu * (pc - pm) * inv_dx;
+            } else {                                               // leftward: forward ∇⁺
+                drift_p = -p_.nu * (pp - pc) * inv_dx;
+            }
             Real mass_p    = -p_.kappa * pc + p_.gamma * mc;
             Real disc_p    = -p_.r   * pc;
             dp[j] = diff_p + upwind_p + drift_p + mass_p + disc_p;
@@ -93,7 +102,13 @@ public:
             // ── ψ₋ (left-mover: advects in −x direction, upwind = forward ∇⁺)
             Real diff_m    = p_.D    * (mp - 2.0*mc + mm) * inv_dx2;
             Real upwind_m  = +p_.c   * (mp - mc)           * inv_dx;   // +c ∇⁺
-            Real drift_m   = -p_.nu  * (mp - mm)           * (0.5 * inv_dx);  // −ν ∇⁰
+            if (!p_.upwind_nu) {
+                drift_m = -p_.nu * (mp - mm) * (0.5 * inv_dx);   // central ∇⁰
+            } else if (p_.nu >= 0) {
+                drift_m = -p_.nu * (mc - mm) * inv_dx;
+            } else {
+                drift_m = -p_.nu * (mp - mc) * inv_dx;
+            }
             Real mass_m    = -p_.kappa * mc + p_.gamma * pc;
             Real disc_m    = -p_.r   * mc;
             dm[j] = diff_m + upwind_m + drift_m + mass_m + disc_m;

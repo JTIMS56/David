@@ -335,3 +335,110 @@ async def dirac_bs_test(
     except FileNotFoundError as e:
         raise HTTPException(503, str(e))
     return result
+
+
+# ── DHJ (Dirac-Heston-Jump) ───────────────────────────────────────────────────
+
+@router.get("/dhj/version")
+async def dhj_version():
+    try:
+        return {"version": _get_dirac().dhj_version()}
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+
+
+@router.get("/dhj/predict/{pair}")
+async def dhj_predict_endpoint(
+    pair: str,
+    horizon_days: float  = Query(30.0,  ge=1,   le=365),
+    kappa_H: float       = Query(1.5,   ge=0.1, le=20.0,  description="Heston mean-reversion speed"),
+    xi: float            = Query(0.30,  ge=0.0, le=2.0,   description="Vol-of-vol"),
+    rho: float           = Query(-0.25, ge=-0.99, le=0.99, description="Leverage correlation"),
+    kappa0: float        = Query(1.0,   ge=0.0, le=500.0, description="Base Dirac mass"),
+    kappa1: float        = Query(0.002, ge=0.0, le=1.0,   description="Vol-dependent Dirac mass correction"),
+    delta_cp: float      = Query(0.0,   ge=-1.0, le=1.0,  description="Initial spinor asymmetry"),
+    jump_lambda: float   = Query(3.0,   ge=0.0, le=50.0,  description="Jump arrival rate (per year)"),
+    jump_p_up: float     = Query(0.55,  ge=0.0, le=1.0,   description="Probability of upward jump"),
+    n_paths: int         = Query(200,   ge=50,  le=1000,  description="MC paths (more = slower but smoother)"),
+    n_points: int        = Query(100,   ge=10,  le=400),
+):
+    """
+    Run the Dirac-Heston-Jump (DHJ) hybrid model — the most expressive option.
+
+    Combines five layers of dynamics:
+    - **Heston stochastic variance**: mean-reverting vol (captures vol clustering)
+    - **Stochastic Dirac diffusion**: wave speed c(τ)=√((1-ρ²)v(τ)) varies with vol
+    - **Regime-dependent mass**: κ(v) = κ₀ + κ₁/v (more ballistic in calm markets)
+    - **Leverage correlation**: ρ links down-moves to vol spikes
+    - **Kou jumps**: Poisson arrivals with asymmetric crash/rally tails
+
+    Converges to Black-Scholes when ξ=0, λ=0, ρ=0, κ₀→∞.
+    """
+    pair = pair.upper()
+    rates = market_data.get_rates()
+    if pair not in rates:
+        raise HTTPException(404, f"Pair {pair} not found in market data")
+    spot = rates[pair]
+
+    import asyncio
+    try:
+        pred = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: _get_dirac().predict_dhj(
+                pair=pair, spot=spot,
+                horizon_days=horizon_days,
+                kappa_H=kappa_H, xi=xi, rho=rho,
+                kappa0=kappa0, kappa1=kappa1, delta_cp=delta_cp,
+                jump_lambda=jump_lambda, jump_p_up=jump_p_up,
+                n_paths=n_paths,
+            )
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+    n_full  = len(pred.prices)
+    stride  = max(1, n_full // n_points)
+    indices = list(range(0, n_full, stride))[:n_points]
+
+    return {
+        "pair":         pair,
+        "spot":         spot,
+        "horizon_days": pred.horizon_days,
+        "model":        "Dirac-Heston-Jump (DHJ)",
+        "params": {
+            "heston":  {"kappa_H": kappa_H, "xi": xi, "rho": rho},
+            "dirac":   {"kappa0": kappa0, "kappa1": kappa1},
+            "jumps":   {"lambda": jump_lambda, "p_up": jump_p_up},
+        },
+        "distribution": {
+            "prices":   [pred.prices[i]   for i in indices],
+            "prob_dhj": [pred.prob_dhj[i] for i in indices],
+            "prob_bs":  [pred.prob_bs[i]  for i in indices],
+        },
+        "statistics": {
+            "mean_dhj":      pred.mean_dhj,
+            "mean_bs":       pred.mean_bs,
+            "std_log_dhj":   pred.var_log_dhj ** 0.5,
+            "std_log_bs":    pred.var_log_bs  ** 0.5,
+            "call_dhj":      pred.call_dhj,
+            "call_bs":       pred.call_bs,
+            "chiral_charge": pred.chiral_charge,
+            "avg_vol":       pred.avg_variance ** 0.5,
+            "n_steps":       pred.n_steps,
+            "n_paths":       pred.n_paths,
+        },
+        "interpretation": {
+            "chiral_sentiment": (
+                "bullish" if pred.chiral_charge > 0.05
+                else "bearish" if pred.chiral_charge < -0.05
+                else "neutral"
+            ),
+            "extra_vol_pct": round(
+                (pred.var_log_dhj / (pred.var_log_bs + 1e-15) - 1.0) * 100, 2
+            ),
+            "vol_clustering": "yes" if xi > 0.1 else "no",
+            "jump_risk":      "yes" if jump_lambda > 0.5 else "no",
+        },
+    }
