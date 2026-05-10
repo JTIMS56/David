@@ -14,15 +14,15 @@ extern "C" {
  * Dirac params:  kappa0, kappa1, delta_cp
  * Jump params:   lambda, p_up, eta_plus, eta_minus
  *
- * scalars_out[10] = {mean_dhj, mean_bs, var_dhj, var_bs,
+ * scalars_out[11] = {mean_dhj, mean_bs, var_dhj, var_bs,
  *                    call_dhj, call_bs, chiral, avg_var,
- *                    n_steps, n_paths}
+ *                    n_steps, n_paths, mass_loss_fraction}
  *
  * Returns: actual points filled, or -1 on error.
  */
 int dhj_predict(
-    // Market
-    double S0, double r, double horizon_T,
+    // Market — Garman-Kohlhagen: r_d = domestic, r_f = foreign (0 for equity)
+    double S0, double r_d, double r_f, double horizon_T,
     // Heston
     double kappa_H, double theta, double xi, double rho, double v0,
     // Dirac
@@ -34,12 +34,13 @@ int dhj_predict(
     // Output arrays
     double* prices_out, double* prob_dhj_out, double* prob_bs_out,
     int n_out,
-    double* scalars_out   // length 10
+    double* scalars_out   // length 11
 ) {
     try {
         DHJInput in;
         in.S0        = S0;
-        in.r         = r;
+        in.r         = r_d;
+        in.r_f       = r_f;
         in.horizon_T = horizon_T;
 
         in.heston.kappa_H = kappa_H;
@@ -71,16 +72,17 @@ int dhj_predict(
             if (prob_bs_out)   prob_bs_out[i]   = out.prob_bs[i];
         }
         if (scalars_out) {
-            scalars_out[0] = out.mean_dhj;
-            scalars_out[1] = out.mean_bs;
-            scalars_out[2] = out.var_log_dhj;
-            scalars_out[3] = out.var_log_bs;
-            scalars_out[4] = out.call_dhj;
-            scalars_out[5] = out.call_bs;
-            scalars_out[6] = out.chiral_charge;
-            scalars_out[7] = out.avg_variance;
-            scalars_out[8] = (double)out.n_steps;
-            scalars_out[9] = (double)out.n_paths;
+            scalars_out[0]  = out.mean_dhj;
+            scalars_out[1]  = out.mean_bs;
+            scalars_out[2]  = out.var_log_dhj;
+            scalars_out[3]  = out.var_log_bs;
+            scalars_out[4]  = out.call_dhj;
+            scalars_out[5]  = out.call_bs;
+            scalars_out[6]  = out.chiral_charge;
+            scalars_out[7]  = out.avg_variance;
+            scalars_out[8]  = (double)out.n_steps;
+            scalars_out[9]  = (double)out.n_paths;
+            scalars_out[10] = out.mass_loss_fraction;
         }
         return n_fill;
     } catch (const std::exception& e) {

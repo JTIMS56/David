@@ -6,26 +6,27 @@
  *
  *  Financial         Brane-world interpretation
  *  ────────────────  ──────────────────────────────────────────────────────
- *  σ (volatility)  → c  (speed of light; maximum price velocity on brane)
+ *  σ (volatility)  → c  (wave speed; maximum price velocity on brane)
  *                    D = σ²/2  (Wilson diffusion = BS diffusion coefficient)
  *  κ (flip rate)   → Dirac mass; large κ ↔ overdamped ↔ Black-Scholes
  *                    κ=0 ↔ massless spinor ↔ pure ballistic price motion
- *  μ (drift)       → ν = μ−r−σ²/2  (log-drift gauge field)
- *  r (risk-free)   → scalar potential (discounting)
+ *  μ_S (drift)     → ν = μ_S − σ²/2  (log-drift gauge field)
+ *                    For Q-measure FX: μ_S = r_d − r_f  (carry rate)
+ *  r_d             → scalar potential (domestic discounting)
  *
- * Black-Scholes limit:
- *   κ → ∞  (with D = σ²/2 fixed) ← OVERDAMPED telegraph process
- *   ψ₊ ≈ ψ₋ → P/2 equilibrates rapidly
- *   ∂_τ P = D ∂_x² P − ν ∂_x P − r P  [exact BS Fokker-Planck]
+ * Black-Scholes / Garman-Kohlhagen limit (κ → ∞, D = σ²/2 fixed):
+ *   ψ₊ ≈ ψ₋ → P/2 equilibrates; telegraph current vanishes.
+ *   ∂_τ P = D ∂_x² P − ν ∂_x P − r_d P  [BS/GK Fokker-Planck, numerical approx]
+ *   This is a convergence result for the PDE; finite-grid/time-step errors remain.
  *
  * Finite-κ corrections (non-Gaussian Dirac regime):
+ *   IMPORTANT: σ is NOT the total model volatility at finite κ.
  *   Extra diffusion:  δD  ≈ c²/(2κ) = σ²/(2κ)
  *   Effective total:  D_eff ≈ σ²/2 · (1 + 1/κ)
+ *   For market-calibrated use, fit D, c, κ jointly to the implied vol surface
+ *   rather than setting c=σ and D=σ²/2 independently.
  *   Skewness:         S ∝ ν/(κ σ√T)
  *   Fat tails for:    κ < 1/T  (light spinor, long horizon)
- *
- * The model is numerically stable, probability-positive, and reduces
- * EXACTLY to Black-Scholes as κ → ∞.
  * ──────────────────────────────────────────────────────────────────────────────
  */
 #include "wilson_dirac.hpp"
@@ -62,28 +63,38 @@ struct FXDiracOutput {
     int  n_steps;
 };
 
-// ── Black-Scholes reference ───────────────────────────────────────────────────
+// ── Garman-Kohlhagen / Black-Scholes reference ────────────────────────────────
 namespace BS {
 
 inline Real norm_cdf(Real x) {
     return 0.5 * std::erfc(-x * M_SQRT1_2);
 }
 
-inline Real lognormal_pdf(Real S, Real S0, Real sigma, Real r, Real T) {
+// Lognormal PDF for FX: carry = r_d − r_f (set r_f=0 for equity/generic).
+// Returns density per unit price (P_S).
+inline Real lognormal_pdf(Real S, Real S0, Real sigma, Real r_d, Real T,
+                          Real r_f = 0.0) {
     if (S <= 0 || T <= 0) return 0.0;
+    Real carry  = r_d - r_f;
     Real log_S  = std::log(S / S0);
-    Real mu_ln  = (r - 0.5 * sigma * sigma) * T;
-    Real sig_ln = sigma * std::sqrt(T);
-    Real z      = (log_S - mu_ln) / sig_ln;
-    return std::exp(-0.5 * z * z) / (sig_ln * S * std::sqrt(2.0 * M_PI));
+    Real mu_ln  = (carry - 0.5 * sigma * sigma) * T;
+    Real sig_sqrt_T = sigma * std::sqrt(T);
+    Real z      = (log_S - mu_ln) / sig_sqrt_T;
+    return std::exp(-0.5 * z * z) / (sig_sqrt_T * S * std::sqrt(2.0 * M_PI));
 }
 
-inline Real call_price(Real S0, Real K, Real sigma, Real r, Real T) {
+// Garman-Kohlhagen call price (Garman & Kohlhagen 1983).
+//   C = S₀·e^{−r_f·T}·N(d₁) − K·e^{−r_d·T}·N(d₂)
+// Set r_f=0 for equity Black-Scholes.
+inline Real call_price(Real S0, Real K, Real sigma, Real r_d, Real T,
+                       Real r_f = 0.0) {
     if (T <= 0) return std::max(S0 - K, 0.0);
-    Real sig_sq_T = sigma * std::sqrt(T);
-    Real d1 = (std::log(S0 / K) + (r + 0.5 * sigma * sigma) * T) / sig_sq_T;
-    Real d2 = d1 - sig_sq_T;
-    return S0 * norm_cdf(d1) - K * std::exp(-r * T) * norm_cdf(d2);
+    Real carry      = r_d - r_f;
+    Real sig_sqrt_T = sigma * std::sqrt(T);
+    Real d1 = (std::log(S0 / K) + (carry + 0.5 * sigma * sigma) * T) / sig_sqrt_T;
+    Real d2 = d1 - sig_sqrt_T;
+    return S0 * std::exp(-r_f * T) * norm_cdf(d1)
+         - K  * std::exp(-r_d * T) * norm_cdf(d2);
 }
 
 } // namespace BS

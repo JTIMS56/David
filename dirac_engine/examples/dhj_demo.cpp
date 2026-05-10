@@ -15,11 +15,12 @@
 
 static void sep(const char* s) { std::printf("\n── %s ──\n", s); }
 
-// Build a default DHJInput for EUR/USD
+// Build a default DHJInput for EUR/USD (Garman-Kohlhagen: USD domestic, EUR foreign)
 static DHJInput eurusd_input(double horizon_T, int N_paths = 300) {
     DHJInput in;
     in.S0        = 1.0850;
-    in.r         = 0.0525;
+    in.r         = 0.0525;   // r_d: USD domestic rate
+    in.r_f       = 0.0400;   // r_f: EUR foreign rate  (carry = 1.25%)
     in.horizon_T = horizon_T;
 
     in.heston.kappa_H = 1.5;    // moderate mean-reversion
@@ -61,26 +62,28 @@ int main() {
 
     const double S0    = 1.0850;
     const double sigma = 0.0820;
-    const double r     = 0.0525;
+    const double r_d   = 0.0525;  // USD domestic rate
+    const double r_f   = 0.0400;  // EUR foreign rate  (carry = 1.25%)
+    const double carry = r_d - r_f;
     const double T1m   = 1.0 / 12.0;
     const double T3m   = 3.0 / 12.0;
 
     // ── 1. Model comparison at 1 month ───────────────────────────────────────
-    sep("1-month comparison: BS vs Dirac vs DHJ");
+    sep("1-month comparison: GK vs Dirac vs DHJ");
     std::printf("%-14s  %-10s  %-10s  %-10s  %-10s\n",
                 "Model", "E[S_T]", "Call_ATM", "VarRatio", "ChiralQ5");
     std::printf("%-14s  %-10s  %-10s  %-10s  %-10s\n",
                 "─────────────", "──────", "──────", "──────", "──────");
 
-    // BS reference
-    Real bs_call = BS::call_price(S0, S0, sigma, r, T1m);
-    Real bs_mean = S0 * std::exp(r * T1m);
+    // Garman-Kohlhagen reference
+    Real bs_call = BS::call_price(S0, S0, sigma, r_d, T1m, r_f);
+    Real bs_mean = S0 * std::exp(carry * T1m);  // GK forward
     Real bs_var  = sigma * sigma * T1m;
     std::printf("%-14s  %-10.5f  %-10.6f  %-10.4f  %-10s\n",
                 "Black-Scholes", bs_mean, bs_call, 1.0, "n/a");
 
-    // Pure Dirac
-    auto d = dirac_only(S0, sigma, r, T1m);
+    // Pure Dirac (uses mu=r_d; no foreign rate in simple Dirac model)
+    auto d = dirac_only(S0, sigma, r_d, T1m);
     std::printf("%-14s  %-10.5f  %-10.6f  %-10.4f  %+.4f\n",
                 "Dirac(κ=2)",
                 d.mean_dirac, d.call_dirac,
@@ -98,8 +101,9 @@ int main() {
                     dhj.mean_dhj, dhj.call_dhj,
                     dhj.var_log_dhj / (bs_var + 1e-15),
                     dhj.chiral_charge, ms);
-        std::printf("  DHJ: avg_vol=%.4f  n_steps=%d  n_paths=%d\n",
-                    std::sqrt(dhj.avg_variance), dhj.n_steps, dhj.n_paths);
+        std::printf("  DHJ: avg_vol=%.4f  n_steps=%d  n_paths=%d  mass_loss=%.3f%%\n",
+                    std::sqrt(dhj.avg_variance), dhj.n_steps, dhj.n_paths,
+                    dhj.mass_loss_fraction * 100.0);
     }
 
     // ── 2. Heston effect: varying xi (vol-of-vol) ────────────────────────────
@@ -146,16 +150,16 @@ int main() {
     sep("3-month horizon: full DHJ vs Dirac vs BS");
     {
         DHJOutput dhj3 = DHJModel(eurusd_input(T3m, 400)).run();
-        auto d3  = dirac_only(S0, sigma, r, T3m);
-        Real bc3 = BS::call_price(S0, S0, sigma, r, T3m);
+        auto d3  = dirac_only(S0, sigma, r_d, T3m);
+        Real bc3 = BS::call_price(S0, S0, sigma, r_d, T3m, r_f);
 
         std::printf("  DHJ:   Call=%.5f  E[S]=%.5f  σ_log=%.4f  Q5=%+.4f\n",
                     dhj3.call_dhj, dhj3.mean_dhj,
                     std::sqrt(dhj3.var_log_dhj), dhj3.chiral_charge);
         std::printf("  Dirac: Call=%.5f  E[S]=%.5f  σ_log=%.4f\n",
                     d3.call_dirac, d3.mean_dirac, std::sqrt(d3.var_log_dirac));
-        std::printf("  BS:    Call=%.5f  E[S]=%.5f  σ_log=%.4f\n\n",
-                    bc3, S0 * std::exp(r * T3m), std::sqrt(sigma * sigma * T3m));
+        std::printf("  BS(GK):Call=%.5f  E[S]=%.5f  σ_log=%.4f\n\n",
+                    bc3, S0 * std::exp(carry * T3m), std::sqrt(sigma * sigma * T3m));
 
         // Distribution sample
         int Np = (int)dhj3.prices.size();

@@ -34,7 +34,7 @@
  *     sample variance path v(τ) via Milstein; record z[i] = ΔW_v/√dt
  *     initialise spinor ψ±(x,0) = Gaussian(θ_ic)
  *     for each time step i:
- *       D_i=v/2, c_i=√v, κ_i=min(κ₀+κ₁/v, 50), ν_i=r−v/2−λζ
+ *       D_i=v/2, c_i=√v, κ_i=min(κ₀+κ₁/v, 0.5/dt), ν_i=r−v/2−λζ
  *       adaptive sub-step if v_i > v_ref; evolve ψ± via RK4
  *       apply leverage grid-shift Δx=ρ√v·z·√dt (unconditionally stable)
  *       apply Kou jumps (also as grid shifts)
@@ -54,9 +54,11 @@
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 struct DHJInput {
-    // Market
+    // Market — Garman-Kohlhagen FX convention
     Real S0;
-    Real r;           // risk-free rate
+    Real r;           // domestic risk-free rate (discounting + drift numerator)
+    Real r_f = 0.0;   // foreign risk-free rate  (0 for equity-style / generic)
+                      // Risk-neutral carry: r - r_f  →  E[S_T] = S₀·exp((r-r_f)·T)
     Real horizon_T;   // years
 
     // Heston variance (layer 1)
@@ -83,7 +85,7 @@ struct DHJInput {
 struct DHJOutput {
     std::vector<Real> prices;
     std::vector<Real> prob_dhj;   // DHJ density (per unit price)
-    std::vector<Real> prob_bs;    // BS reference density
+    std::vector<Real> prob_bs;    // GK/BS reference density
     Real mean_dhj;
     Real mean_bs;
     Real var_log_dhj;
@@ -91,7 +93,8 @@ struct DHJOutput {
     Real call_dhj;
     Real call_bs;
     Real chiral_charge;
-    Real avg_variance;    // realised mean variance across paths
+    Real avg_variance;        // realised mean variance across paths
+    Real mass_loss_fraction;  // fraction of probability lost off grid (boundary diagnostic)
     int  n_steps;
     int  n_paths;
 };
@@ -135,9 +138,11 @@ public:
         int  nsteps = (int)std::ceil(T / dt);
         dt           = T / nsteps;
 
-        // ν = r − v/2 − jump_comp stays small; central diff is fine.
-        // Keep nu_max as a sanity clamp (should never trigger).
-        Real nu_max = 0.5 * dx / dt;
+        // Garman-Kohlhagen carry: risk-neutral log-drift = (r_d − r_f) − v/2.
+        // r_f=0 gives equity Black-Scholes; for FX set r_f = foreign rate.
+        Real carry  = in_.r - in_.r_f;
+        // ν = carry − v/2 − jump_comp; stays small with central diff.
+        Real nu_max = 0.5 * dx / dt;   // sanity clamp (should never trigger)
 
         // ── RNG ───────────────────────────────────────────────────────────────
         unsigned seed = in_.seed != 0 ? in_.seed : std::random_device{}();
@@ -184,15 +189,16 @@ public:
                 // Using v_ind·v prevents double-counting the ρ²·v variance.
                 Real D_i   = v_ind * vi / 2.0;
                 Real c_i   = std::sqrt(v_ind * vi);
-                // κ₁/v is singular at v→0; cap at 50 to keep κ·h < 0.01 (RK4 stable).
-                // When Feller condition is violated (2κθ < ξ²), v touches 0 frequently,
-                // and κ₁/v would otherwise blow past RK4's |λh| < 2.785 stability limit.
+                // κ₁/v is singular at v→0; cap total κ so that 2κ·dt < 1.0 (RK4 stable:
+                // stiff eigenvalue is -2κ, stability limit |2κh| < 2.785).
+                // Using 0.5/dt gives a 2.8× safety margin. This allows large κ₀ (e.g. 200
+                // for BS-recovery tests) while bounding pathological κ₁/v when v≈1e-10.
+                Real kappa_max = 0.5 / dt;
                 Real kd_i  = std::min(in_.kappa0 + (vi > 1e-8 ? in_.kappa1 / vi : 0.0),
-                                      50.0);
+                                      kappa_max);
 
-                // ν = r − v/2 − λζ  (full v for drift; leverage applied as shift below)
-                // Risk-neutral log-return drift is r − v/2 regardless of ρ decomposition.
-                Real nu_i  = (in_.r - vi / 2.0) - jump_comp;
+                // ν = carry − v/2 − λζ  (carry = r_d − r_f; leverage as shift below)
+                Real nu_i  = (carry - vi / 2.0) - jump_comp;
                 nu_i = std::max(-nu_max, std::min(nu_max, nu_i));
 
                 // Adaptive sub-stepping: if v_i > v_ref (independent component), CFL violated.
@@ -246,16 +252,21 @@ public:
             acc_minus[j] *= inv_w;
             total += (acc_plus[j] + acc_minus[j]) * dx;
         }
+        // total ≈ e^{−r_d·T} (discounting); 1−total/e^{−rT} ≈ boundary mass loss.
+        Real expected_norm  = std::exp(-in_.r * T);
+        Real mass_loss_frac = std::max(0.0, 1.0 - total / expected_norm);
+
         Real inv_tot = (total > 1e-15) ? 1.0 / total : 0.0;
         // acc_var and acc_chiral: weight by path count (all paths contributed)
         Real inv_p = 1.0 / N_paths;
 
         // ── Build output ───────────────────────────────────────────────────────
         DHJOutput out;
-        out.n_steps       = nsteps;
-        out.n_paths       = N_paths;
-        out.avg_variance  = acc_var    * inv_p;
-        out.chiral_charge = acc_chiral * inv_p;
+        out.n_steps            = nsteps;
+        out.n_paths            = N_paths;
+        out.avg_variance       = acc_var    * inv_p;
+        out.chiral_charge      = acc_chiral * inv_p;
+        out.mass_loss_fraction = mass_loss_frac;
 
         out.prices.resize(N);
         out.prob_dhj.resize(N);
@@ -273,7 +284,9 @@ public:
 
             Real p_x    = (acc_plus[j] + acc_minus[j]) * inv_tot;
             Real p_S    = p_x / Sj;
-            Real p_logbs = BS::lognormal_pdf(Sj, in_.S0, sig_bs, in_.r, T) * Sj;
+            // Garman-Kohlhagen reference density (r_f=0 → reduces to equity BS)
+            Real p_logbs = BS::lognormal_pdf(Sj, in_.S0, sig_bs, in_.r, T,
+                                             in_.r_f) * Sj;
 
             out.prices[j]   = Sj;
             out.prob_dhj[j] = p_S;
@@ -290,8 +303,8 @@ public:
         out.mean_bs     = mean_b;
         out.var_log_dhj = var_d - mu_x * mu_x;
         out.var_log_bs  = sig_bs * sig_bs * T;
-        out.call_dhj    = std::exp(-in_.r * T) * call_d;
-        out.call_bs     = BS::call_price(in_.S0, K, sig_bs, in_.r, T);
+        out.call_dhj    = std::exp(-in_.r * T) * call_d;  // domestic discounting
+        out.call_bs     = BS::call_price(in_.S0, K, sig_bs, in_.r, T, in_.r_f);
 
         return out;
     }

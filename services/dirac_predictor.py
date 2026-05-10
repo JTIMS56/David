@@ -17,16 +17,26 @@ logger = logging.getLogger(__name__)
 _HERE = os.path.dirname(__file__)
 _SO   = os.path.join(_HERE, "..", "dirac_engine", "build", "dirac_fx.so")
 
-# ── Market-pair default parameters ────────────────────────────────────────────
+# ── Market-pair default parameters (Garman-Kohlhagen convention) ──────────────
+# r_d = domestic rate, r_f = foreign rate; carry = r_d - r_f drives E[S_T].
+# Rates are approximate central bank policy rates (update periodically).
 _PAIR_PARAMS: dict[str, dict] = {
-    "EURUSD": {"sigma": 0.082, "r": 0.0525},
-    "GBPUSD": {"sigma": 0.098, "r": 0.0525},
-    "USDJPY": {"sigma": 0.075, "r": 0.0525},
-    "AUDUSD": {"sigma": 0.110, "r": 0.0435},
-    "USDCAD": {"sigma": 0.078, "r": 0.0525},
-    "EURGBP": {"sigma": 0.062, "r": 0.0400},
-    "NZDUSD": {"sigma": 0.115, "r": 0.0550},
-    "USDCHF": {"sigma": 0.070, "r": 0.0525},
+    # pair    sigma   r_d(USD)  r_f(EUR)
+    "EURUSD": {"sigma": 0.082, "r": 0.0525, "r_f": 0.0400},
+    # pair    sigma   r_d(USD)  r_f(GBP)
+    "GBPUSD": {"sigma": 0.098, "r": 0.0525, "r_f": 0.0525},
+    # pair    sigma   r_d(JPY)  r_f(USD)
+    "USDJPY": {"sigma": 0.075, "r": 0.0010, "r_f": 0.0525},
+    # pair    sigma   r_d(USD)  r_f(AUD)
+    "AUDUSD": {"sigma": 0.110, "r": 0.0525, "r_f": 0.0435},
+    # pair    sigma   r_d(CAD)  r_f(USD)
+    "USDCAD": {"sigma": 0.078, "r": 0.0500, "r_f": 0.0525},
+    # pair    sigma   r_d(GBP)  r_f(EUR)
+    "EURGBP": {"sigma": 0.062, "r": 0.0525, "r_f": 0.0400},
+    # pair    sigma   r_d(USD)  r_f(NZD)
+    "NZDUSD": {"sigma": 0.115, "r": 0.0525, "r_f": 0.0550},
+    # pair    sigma   r_d(CHF)  r_f(USD)
+    "USDCHF": {"sigma": 0.070, "r": 0.0175, "r_f": 0.0525},
 }
 
 _DEFAULT_KAPPA     = 2.0   # moderate Dirac mass (between wave and diffusion)
@@ -36,24 +46,27 @@ _DEFAULT_N_SITES   = 400
 
 @dataclass
 class DHJPrediction:
-    prices:       list[float]
-    prob_dhj:     list[float]
-    prob_bs:      list[float]
-    mean_dhj:     float
-    mean_bs:      float
-    var_log_dhj:  float
-    var_log_bs:   float
-    call_dhj:     float
-    call_bs:      float
-    chiral_charge: float
-    avg_variance: float
-    n_steps:      int
-    n_paths:      int
-    horizon_days: float
-    kappa0:       float
-    xi:           float
-    rho:          float
-    jump_lambda:  float
+    prices:             list[float]
+    prob_dhj:           list[float]
+    prob_bs:            list[float]  # Garman-Kohlhagen reference
+    mean_dhj:           float
+    mean_bs:            float
+    var_log_dhj:        float
+    var_log_bs:         float
+    call_dhj:           float
+    call_bs:            float        # GK call price
+    chiral_charge:      float
+    avg_variance:       float
+    n_steps:            int
+    n_paths:            int
+    mass_loss_fraction: float        # boundary diagnostic: fraction leaked off grid
+    horizon_days:       float
+    kappa0:             float
+    xi:                 float
+    rho:                float
+    jump_lambda:        float
+    r_d:                float        # domestic rate used
+    r_f:                float        # foreign rate used
 
 
 @dataclass
@@ -131,8 +144,8 @@ class DiracPredictor:
         dhj = self._lib.dhj_predict
         dhj.restype  = ctypes.c_int
         dhj.argtypes = [
-            # Market
-            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            # Market: S0, r_d, r_f, horizon_T  (Garman-Kohlhagen)
+            ctypes.c_double, ctypes.c_double, ctypes.c_double, ctypes.c_double,
             # Heston: kappa_H, theta, xi, rho, v0
             ctypes.c_double, ctypes.c_double, ctypes.c_double,
             ctypes.c_double, ctypes.c_double,
@@ -147,7 +160,7 @@ class DiracPredictor:
             ctypes.POINTER(ctypes.c_double),  # prob_dhj
             ctypes.POINTER(ctypes.c_double),  # prob_bs
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_double),  # scalars [10]
+            ctypes.POINTER(ctypes.c_double),  # scalars [11]
         ]
 
         dver = self._lib.dhj_version
@@ -292,21 +305,22 @@ class DiracPredictor:
 
         n_paths MC paths are averaged; ~300 gives good accuracy in <2s.
         """
-        params = _PAIR_PARAMS.get(pair.upper(), {"sigma": 0.085, "r": 0.0500})
+        params = _PAIR_PARAMS.get(pair.upper(), {"sigma": 0.085, "r": 0.0500, "r_f": 0.0})
         sigma  = params["sigma"]
-        r      = params["r"]
+        r_d    = params["r"]
+        r_f    = params.get("r_f", 0.0)
         v0     = sigma * sigma
         theta  = v0          # start at long-run variance = initial variance
         T      = horizon_days / 365.0
         n      = n_sites
 
-        prices_arr  = (ctypes.c_double * n)()
-        prob_dhj_arr= (ctypes.c_double * n)()
-        prob_bs_arr = (ctypes.c_double * n)()
-        scalars_arr = (ctypes.c_double * 10)()
+        prices_arr   = (ctypes.c_double * n)()
+        prob_dhj_arr = (ctypes.c_double * n)()
+        prob_bs_arr  = (ctypes.c_double * n)()
+        scalars_arr  = (ctypes.c_double * 11)()
 
         n_fill = self._lib.dhj_predict(
-            spot, r, T,
+            spot, r_d, r_f, T,               # Garman-Kohlhagen: S0, r_d, r_f, T
             kappa_H, theta, xi, rho, v0,
             kappa0, kappa1, delta_cp,
             jump_lambda, jump_p_up, jump_eta_plus, jump_eta_minus,
@@ -319,22 +333,25 @@ class DiracPredictor:
             raise RuntimeError(f"dhj_predict failed for pair={pair}")
 
         return DHJPrediction(
-            prices        = list(prices_arr[:n_fill]),
-            prob_dhj      = list(prob_dhj_arr[:n_fill]),
-            prob_bs       = list(prob_bs_arr[:n_fill]),
-            mean_dhj      = scalars_arr[0],
-            mean_bs       = scalars_arr[1],
-            var_log_dhj   = scalars_arr[2],
-            var_log_bs    = scalars_arr[3],
-            call_dhj      = scalars_arr[4],
-            call_bs       = scalars_arr[5],
-            chiral_charge = scalars_arr[6],
-            avg_variance  = scalars_arr[7],
-            n_steps       = int(scalars_arr[8]),
-            n_paths       = int(scalars_arr[9]),
-            horizon_days  = horizon_days,
-            kappa0        = kappa0,
-            xi            = xi,
-            rho           = rho,
-            jump_lambda   = jump_lambda,
+            prices              = list(prices_arr[:n_fill]),
+            prob_dhj            = list(prob_dhj_arr[:n_fill]),
+            prob_bs             = list(prob_bs_arr[:n_fill]),
+            mean_dhj            = scalars_arr[0],
+            mean_bs             = scalars_arr[1],
+            var_log_dhj         = scalars_arr[2],
+            var_log_bs          = scalars_arr[3],
+            call_dhj            = scalars_arr[4],
+            call_bs             = scalars_arr[5],
+            chiral_charge       = scalars_arr[6],
+            avg_variance        = scalars_arr[7],
+            n_steps             = int(scalars_arr[8]),
+            n_paths             = int(scalars_arr[9]),
+            mass_loss_fraction  = scalars_arr[10],
+            horizon_days        = horizon_days,
+            kappa0              = kappa0,
+            xi                  = xi,
+            rho                 = rho,
+            jump_lambda         = jump_lambda,
+            r_d                 = r_d,
+            r_f                 = r_f,
         )

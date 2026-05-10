@@ -38,11 +38,24 @@ struct JumpParams {
 
 class KouJumpProcess {
 public:
-    explicit KouJumpProcess(const JumpParams& p) : p_(p) {}
+    explicit KouJumpProcess(const JumpParams& p) : p_(p) {
+        if (p.lambda < 0.0)
+            throw std::invalid_argument("JumpParams: lambda must be >= 0");
+        if (p.lambda > 0.0) {
+            if (p.p_up <= 0.0 || p.p_up >= 1.0)
+                throw std::invalid_argument("JumpParams: p_up must be in (0, 1)");
+            if (p.eta_plus <= 1.0)
+                throw std::invalid_argument(
+                    "JumpParams: eta_plus must be > 1 (otherwise E[e^Y] is undefined)");
+            if (p.eta_minus <= 0.0)
+                throw std::invalid_argument("JumpParams: eta_minus must be > 0");
+        }
+    }
 
-    // E[e^Y − 1] — risk-neutral compensator; subtract λ·this from ν
+    // E[e^Y − 1] — risk-neutral compensator; subtract λ·this from ν.
+    // η₊ > 1 is required (validated in constructor).
     Real jump_compensator() const {
-        if (p_.lambda <= 0.0 || p_.eta_plus <= 1.0) return 0.0;
+        if (p_.lambda <= 0.0) return 0.0;
         Real up   = p_.p_up       * p_.eta_plus  / (p_.eta_plus  - 1.0);
         Real down = (1.0-p_.p_up) * p_.eta_minus / (p_.eta_minus + 1.0);
         return up + down - 1.0;
