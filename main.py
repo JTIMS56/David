@@ -96,7 +96,7 @@ async def broadcast_prices(interval: float = 2.0) -> None:
                 "timestamp": datetime.utcnow().isoformat(),
             })
         except Exception:
-            pass
+            logger.exception("Error in price broadcast loop")
         await asyncio.sleep(interval)
 
 
@@ -129,10 +129,13 @@ async def lifespan(app: FastAPI):
     # Start price broadcast
     broadcast_task = asyncio.create_task(broadcast_prices())
 
-    # Auto-start agent if API key present
-    if settings.anthropic_api_key or True:  # demo mode also auto-starts
+    # Auto-start agent only when explicitly configured
+    if settings.anthropic_api_key:
         await trading_agent.start()
-        logger.info(f"Trading agent started (mode={'ai' if settings.anthropic_api_key else 'demo'})")
+        logger.info("Trading agent started (mode=ai)")
+    elif getattr(settings, "demo_mode", False):
+        await trading_agent.start()
+        logger.info("Trading agent started (mode=demo)")
 
     logger.info(f"Platform ready — balance: ${settings.initial_balance:,.2f}")
     yield

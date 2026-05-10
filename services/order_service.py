@@ -3,27 +3,87 @@ Order Service  (Paper Trading)
 ────────────────────────────────────────────────────────────────────────────
 Executes orders against the simulated market, manages open positions, and
 triggers stop-loss / take-profit checks on every price update.
+
+Every open_position() call passes through RiskGate unconditionally before any
+DB write. The gate cannot be bypassed by the LLM — it lives at the service
+layer, not the tool layer.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Tuple
 
 from sqlalchemy import select
 
 from config import settings
 from database import AsyncSessionLocal
-from models.orm import Position, Trade
-from services.market_data import market_data
+from models.orm import AuditLog, Position, Trade
+from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
+from services.risk_gate import risk_gate
+
+logger = logging.getLogger("david.order_service")
+
+
+def _spread_pips(pair: str, bid: float, ask: float) -> float:
+    pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+    return (ask - bid) / pip
+
+
+def _data_age_seconds(bar) -> float:
+    now = datetime.now(timezone.utc)
+    ts  = bar.timestamp
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (now - ts).total_seconds()
+
+
+async def _write_audit(
+    *,
+    source: str,
+    event_type: str,
+    pair: str | None = None,
+    direction: str | None = None,
+    size: float | None = None,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+    position_id: int | None = None,
+    realised_pnl: float | None = None,
+    gate_allowed: bool | None = None,
+    gate_reason: str | None = None,
+    details: dict | None = None,
+) -> None:
+    try:
+        async with AsyncSessionLocal() as db:
+            entry = AuditLog(
+                source=source,
+                event_type=event_type,
+                pair=pair,
+                direction=direction,
+                size=size,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_id=position_id,
+                realised_pnl=realised_pnl,
+                gate_allowed=gate_allowed,
+                gate_reason=gate_reason,
+                details=json.dumps(details) if details else None,
+            )
+            db.add(entry)
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to write audit log entry (event=%s)", event_type)
 
 
 class OrderService:
     def __init__(self) -> None:
         self._monitor_task: Optional[asyncio.Task] = None
-        self._ws_broadcast: Optional[callable] = None  # injected by app
+        self._ws_broadcast: Optional[callable] = None
 
     def set_broadcast(self, fn: callable) -> None:
         self._ws_broadcast = fn
@@ -42,13 +102,48 @@ class OrderService:
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
         reasoning: Optional[str] = None,
+        source: str = "agent",   # "agent" | "human" | "sl_tp"
     ) -> Tuple[bool, str, Optional[Position]]:
         bar = market_data.get_price(pair)
         if bar is None:
+            await _write_audit(
+                source=source, event_type="ORDER_REJECT",
+                pair=pair, direction=direction, size=size, stop_loss=stop_loss,
+                gate_allowed=False, gate_reason="No price data available",
+            )
             return False, f"No price available for {pair}", None
 
         entry_price = bar.ask if direction == "BUY" else bar.bid
+        spread      = _spread_pips(pair, bar.bid, bar.ask)
+        data_age    = _data_age_seconds(bar)
 
+        # ── Hard gate (mandatory, LLM cannot bypass) ──────────────────────────
+        decision = risk_gate.approve_order(
+            pair=pair,
+            direction=direction,
+            size=size,
+            stop_loss=stop_loss,
+            entry_price=entry_price,
+            spread_pips=spread,
+            data_age_seconds=data_age,
+            source=source,
+        )
+
+        if not decision.allowed:
+            logger.warning(
+                "Order BLOCKED by gate [%s %s %s]: %s",
+                direction, size, pair, decision.reason,
+            )
+            await _write_audit(
+                source=source, event_type="ORDER_REJECT",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=False, gate_reason=decision.reason,
+                details={"checks_run": decision.checks_run, "spread_pips": spread},
+            )
+            return False, f"Order blocked: {decision.reason}", None
+
+        # ── Write position + trade atomically ─────────────────────────────────
         async with AsyncSessionLocal() as db:
             pos = Position(
                 pair=pair,
@@ -79,6 +174,15 @@ class OrderService:
             await db.commit()
             await db.refresh(pos)
 
+        await _write_audit(
+            source=source, event_type="ORDER_OPEN",
+            pair=pair, direction=direction, size=size,
+            entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+            position_id=pos.id,
+            gate_allowed=True, gate_reason=decision.reason,
+            details={"spread_pips": spread, "data_age_s": round(data_age, 1)},
+        )
+
         await self._broadcast("position_opened", {
             "position_id": pos.id,
             "pair": pair,
@@ -86,6 +190,7 @@ class OrderService:
             "size": size,
             "entry_price": entry_price,
         })
+        logger.info("Position opened: %s %s %s @ %.5f (id=%d)", direction, size, pair, entry_price, pos.id)
         return True, f"Opened {direction} {size} {pair} @ {entry_price:.5f}", pos
 
     async def close_position(
@@ -93,6 +198,7 @@ class OrderService:
         position_id: int,
         action: str = "CLOSE",
         reasoning: Optional[str] = None,
+        source: str = "agent",
     ) -> Tuple[bool, str, float]:
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -112,10 +218,10 @@ class OrderService:
             else:
                 pnl = (pos.entry_price - close_price) * pos.size
 
-            pos.status = "CLOSED"
-            pos.close_price = close_price
-            pos.closed_at = datetime.now(timezone.utc)
-            pos.realised_pnl = round(pnl, 2)
+            pos.status        = "CLOSED"
+            pos.close_price   = close_price
+            pos.closed_at     = datetime.now(timezone.utc)
+            pos.realised_pnl  = round(pnl, 2)
             pos.unrealised_pnl = 0.0
 
             trade = Trade(
@@ -132,11 +238,20 @@ class OrderService:
             await db.commit()
 
         portfolio_service.apply_realised_pnl(pnl)
+
+        await _write_audit(
+            source=source, event_type=action,
+            pair=pos.pair, direction=pos.direction, size=pos.size,
+            entry_price=pos.entry_price, stop_loss=pos.stop_loss,
+            position_id=position_id, realised_pnl=round(pnl, 2),
+        )
+
         await self._broadcast("position_closed", {
             "position_id": position_id,
             "pnl": round(pnl, 2),
             "action": action,
         })
+        logger.info("Position closed: id=%d action=%s pnl=%.2f", position_id, action, pnl)
         return True, f"Closed position {position_id} @ {close_price:.5f}, PnL: {pnl:.2f}", pnl
 
     # ── SL/TP monitoring ──────────────────────────────────────────────────────
@@ -152,13 +267,13 @@ class OrderService:
             triggered_action: Optional[str] = None
 
             if pos.stop_loss is not None:
-                if pos.direction == "BUY" and current <= pos.stop_loss:
+                if pos.direction == "BUY"  and current <= pos.stop_loss:
                     triggered_action = "SL_HIT"
                 elif pos.direction == "SELL" and current >= pos.stop_loss:
                     triggered_action = "SL_HIT"
 
             if pos.take_profit is not None and triggered_action is None:
-                if pos.direction == "BUY" and current >= pos.take_profit:
+                if pos.direction == "BUY"  and current >= pos.take_profit:
                     triggered_action = "TP_HIT"
                 elif pos.direction == "SELL" and current <= pos.take_profit:
                     triggered_action = "TP_HIT"
@@ -168,6 +283,7 @@ class OrderService:
                     pos.id,
                     action=triggered_action,
                     reasoning=f"Auto-triggered: {triggered_action}",
+                    source="sl_tp",
                 )
 
     async def _monitor_loop(self, interval: float = 3.0) -> None:
@@ -176,7 +292,7 @@ class OrderService:
                 await portfolio_service.update_unrealised_pnl()
                 await self.check_sl_tp()
             except Exception:
-                pass
+                logger.exception("Error in SL/TP monitor loop")
             await asyncio.sleep(interval)
 
     async def start_monitor(self) -> None:

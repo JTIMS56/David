@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .benchmarks import default_benchmark_suite
 from .data import load_prices, estimate_realized_vol, compute_log_returns
 from .metrics import (
     BacktestRecord, log_likelihood, crps_from_cdf, pit_score,
@@ -48,6 +49,7 @@ class BacktestResults:
     pair: str = ""
     horizon_days: int = 22
     model: str = "DHJ"
+    benchmark_scores: dict = field(default_factory=dict)
 
     def to_dataframe(self) -> pd.DataFrame:
         return pd.DataFrame([r.__dict__ for r in self.records])
@@ -97,13 +99,24 @@ class BacktestRunner:
         self.prices = load_prices(pair, start, end, csv_path)
         self.rvol   = estimate_realized_vol(self.prices, vol_window)
 
-    def run(self, seed_base: int = 0) -> BacktestResults:
-        """Run rolling backtest; returns BacktestResults."""
+    def run(self, seed_base: int = 0, include_benchmarks: bool = True) -> BacktestResults:
+        """
+        Run rolling backtest; returns BacktestResults.
+        Set include_benchmarks=True to also score all classical benchmark models
+        and print a comparison table at the end.
+        """
         from services.dirac_predictor import DiracPredictor
-        predictor = DiracPredictor.instance()
+        predictor   = DiracPredictor.instance()
+        benchmarks  = default_benchmark_suite() if include_benchmarks else []
 
         results = BacktestResults(pair=self.pair, horizon_days=self.horizon_days)
+        # Per-benchmark accumulators: {name: [ll, crps, coverage, pit]}
+        bench_acc: dict[str, dict] = {
+            b.name: {"ll": [], "crps": [], "cov": [], "pit": []}
+            for b in benchmarks
+        }
         dates = self.prices.index
+        log_returns = compute_log_returns(self.prices)
 
         # Identify all forecast dates with a valid horizon outcome
         forecast_dates = []
@@ -172,11 +185,33 @@ class BacktestRunner:
             )
             results.records.append(rec)
 
+            # Score benchmark models at the same date
+            past_rets = log_returns.iloc[:i].values
+            for bm in benchmarks:
+                try:
+                    from services.dirac_predictor import _PAIR_PARAMS
+                    pp = _PAIR_PARAMS.get(self.pair, {"r": 0.0525, "r_f": 0.0})
+                    fc = bm.forecast(
+                        S0, self.horizon_days, past_rets,
+                        r_d=pp["r"], r_f=pp.get("r_f", 0.0),
+                    )
+                    bm_ll   = log_likelihood(S_real, list(fc.prices), list(fc.density))
+                    bm_crps = crps_from_cdf(S_real, list(fc.prices), list(fc.density))
+                    bm_pit  = pit_score(S_real, list(fc.prices), list(fc.density))
+                    bm_cov  = coverage_95(S_real, list(fc.prices), list(fc.density))
+                    bench_acc[bm.name]["ll"].append(bm_ll)
+                    bench_acc[bm.name]["crps"].append(bm_crps)
+                    bench_acc[bm.name]["cov"].append(bm_cov)
+                    bench_acc[bm.name]["pit"].append(bm_pit)
+                except Exception as e:
+                    logger.debug("Benchmark %s failed at %s: %s", bm.name, d.date(), e)
+
             if (k + 1) % 50 == 0:
                 logger.info("  %d/%d  mean_LL=%.3f  coverage=%.1f%%",
                             k+1, len(forecast_dates),
                             results.mean_ll, 100*results.coverage_rate)
 
+        results.benchmark_scores = bench_acc
         return results
 
     @staticmethod
@@ -218,6 +253,28 @@ class BacktestRunner:
             cov = 100 * grp["coverage_95"].mean()
             mll = grp["log_likelihood"].mean()
             lines.append(f"    {yr}: n={len(grp):3d}  coverage={cov:.0f}%  mean_LL={mll:.3f}")
+        # Benchmark comparison table
+        bench = getattr(results, "benchmark_scores", {})
+        if bench:
+            lines.append("")
+            lines.append("  Benchmark comparison (mean log-likelihood / CRPS / coverage):")
+            lines.append(f"  {'Model':<20}  {'Mean LL':>9}  {'Mean CRPS':>10}  {'Coverage':>9}")
+            lines.append(f"  {'-'*20}  {'-'*9}  {'-'*10}  {'-'*9}")
+            # DHJ first
+            lines.append(
+                f"  {'DHJ (this model)':<20}  {results.mean_ll:>9.4f}  "
+                f"{results.mean_crps:>10.6f}  {100*results.coverage_rate:>8.1f}%"
+            )
+            for name, acc in bench.items():
+                if not acc["ll"]:
+                    continue
+                m_ll   = float(np.mean(acc["ll"]))
+                m_crps = float(np.mean(acc["crps"]))
+                m_cov  = 100.0 * float(np.mean(acc["cov"]))
+                lines.append(
+                    f"  {name:<20}  {m_ll:>9.4f}  {m_crps:>10.6f}  {m_cov:>8.1f}%"
+                )
+
         lines.append("=" * 60)
         report_str = "\n".join(lines)
         print(report_str)

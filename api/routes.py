@@ -12,7 +12,7 @@ from sqlalchemy import select, desc
 
 from config import settings
 from database import AsyncSessionLocal
-from models.orm import AgentDecision, Position, Trade, PortfolioSnapshot
+from models.orm import AgentDecision, AuditLog, Position, Trade, PortfolioSnapshot
 from models.schemas import (
     AgentDecisionOut, AgentStatusOut, PortfolioOut, PositionOut, RatesOut,
     SystemStatusOut, TradeOut,
@@ -20,6 +20,7 @@ from models.schemas import (
 from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
+from services.risk_gate import risk_gate
 from agents.trading_agent import trading_agent
 
 router = APIRouter(prefix="/api")
@@ -161,7 +162,7 @@ async def list_positions(status: Optional[str] = None):
 
 @router.delete("/positions/{position_id}")
 async def close_position_endpoint(position_id: int, reasoning: str = "Manual close via API"):
-    ok, msg, pnl = await order_service.close_position(position_id, reasoning=reasoning)
+    ok, msg, pnl = await order_service.close_position(position_id, reasoning=reasoning, source="human")
     if not ok:
         raise HTTPException(400, msg)
     return {"success": True, "message": msg, "pnl": pnl}
@@ -224,6 +225,80 @@ async def get_decision(decision_id: int):
     if not decision:
         raise HTTPException(404, "Decision not found")
     return AgentDecisionOut.model_validate(decision)
+
+
+# ── Risk Gate & Kill Switch ───────────────────────────────────────────────────
+
+@router.get("/risk/status")
+async def risk_status():
+    """Current state of the hard risk gate (kill switch, manual-only mode)."""
+    return risk_gate.status()
+
+
+@router.post("/risk/kill-switch")
+async def activate_kill_switch(reason: str = "Manual activation via API"):
+    """
+    ACTIVATE the kill switch — blocks ALL new orders immediately.
+    Existing open positions are NOT automatically closed.
+    Use /api/positions (DELETE) to close positions manually.
+    """
+    risk_gate.activate_kill_switch(reason)
+    return {"kill_switch_active": True, "reason": reason}
+
+
+@router.delete("/risk/kill-switch")
+async def deactivate_kill_switch():
+    """Deactivate the kill switch — allows new orders again."""
+    risk_gate.deactivate_kill_switch()
+    return {"kill_switch_active": False}
+
+
+@router.post("/risk/manual-only")
+async def set_manual_only(enabled: bool):
+    """
+    Enable manual-only mode — agent orders are blocked; human API calls allowed.
+    enabled=true  → agent suspended (human oversight mode)
+    enabled=false → agent orders permitted again
+    """
+    risk_gate.set_manual_only(enabled)
+    return {"manual_only_active": enabled}
+
+
+@router.get("/audit")
+async def get_audit_log(
+    limit: int = Query(50, ge=1, le=500),
+    event_type: Optional[str] = None,
+    source: Optional[str] = None,
+):
+    """Immutable audit trail: every order attempt and gate decision."""
+    async with AsyncSessionLocal() as db:
+        q = select(AuditLog).order_by(desc(AuditLog.timestamp))
+        if event_type:
+            q = q.where(AuditLog.event_type == event_type.upper())
+        if source:
+            q = q.where(AuditLog.source == source.lower())
+        result = await db.execute(q.limit(limit))
+        rows = result.scalars().all()
+    return [
+        {
+            "id":           r.id,
+            "timestamp":    r.timestamp.isoformat(),
+            "source":       r.source,
+            "event_type":   r.event_type,
+            "pair":         r.pair,
+            "direction":    r.direction,
+            "size":         r.size,
+            "entry_price":  r.entry_price,
+            "stop_loss":    r.stop_loss,
+            "take_profit":  r.take_profit,
+            "position_id":  r.position_id,
+            "realised_pnl": r.realised_pnl,
+            "gate_allowed": r.gate_allowed,
+            "gate_reason":  r.gate_reason,
+            "details":      r.details,
+        }
+        for r in rows
+    ]
 
 
 # ── Dirac FX Model ────────────────────────────────────────────────────────────
@@ -425,9 +500,10 @@ async def dhj_predict_endpoint(
             "call_dhj":      pred.call_dhj,
             "call_bs":       pred.call_bs,
             "chiral_charge": pred.chiral_charge,
-            "avg_vol":       pred.avg_variance ** 0.5,
-            "n_steps":       pred.n_steps,
-            "n_paths":       pred.n_paths,
+            "avg_vol":            pred.avg_variance ** 0.5,
+            "n_steps":            pred.n_steps,
+            "n_paths":            pred.n_paths,
+            "mass_loss_fraction": pred.mass_loss_fraction,
         },
         "interpretation": {
             "chiral_sentiment": (

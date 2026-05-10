@@ -264,6 +264,7 @@ async def _place_order(inputs: dict) -> dict:
         stop_loss=stop_loss,
         take_profit=take_profit,
         reasoning=reasoning,
+        source="agent",
     )
     result = {"success": ok, "message": msg}
     if pos:

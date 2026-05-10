@@ -79,3 +79,28 @@ class PortfolioSnapshot(Base):
     open_positions: Mapped[int] = mapped_column(Integer, default=0)
     daily_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     total_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class AuditLog(Base):
+    """Immutable record of every order attempt and gate decision."""
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    # Who submitted the order
+    source: Mapped[str] = mapped_column(String(20))          # agent | human | sl_tp | system
+    event_type: Mapped[str] = mapped_column(String(20), index=True)  # ORDER_OPEN | ORDER_REJECT | SL_TP | KILL_SWITCH | ...
+    # Order details
+    pair: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    direction: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    entry_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    position_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    realised_pnl: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Gate outcome
+    gate_allowed: Mapped[Optional[bool]] = mapped_column(nullable=True)
+    gate_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Extra context (JSON string)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
