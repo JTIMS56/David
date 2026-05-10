@@ -224,3 +224,114 @@ async def get_decision(decision_id: int):
     if not decision:
         raise HTTPException(404, "Decision not found")
     return AgentDecisionOut.model_validate(decision)
+
+
+# ── Dirac FX Model ────────────────────────────────────────────────────────────
+
+def _get_dirac() -> "DiracPredictor":
+    """Lazy-import so the library absence doesn't crash startup."""
+    from services.dirac_predictor import DiracPredictor
+    return DiracPredictor.instance()
+
+
+@router.get("/dirac/version")
+async def dirac_version():
+    try:
+        return {"version": _get_dirac().version()}
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+
+
+@router.get("/dirac/predict/{pair}")
+async def dirac_predict(
+    pair: str,
+    horizon_days: float = Query(30.0, ge=1, le=365, description="Forecast horizon in days"),
+    kappa: float        = Query(2.0,  ge=0, le=500, description="Dirac mass / flip rate"),
+    delta_cp: float     = Query(0.0,  ge=-1, le=1,  description="CP asymmetry (-1 bearish, +1 bullish)"),
+    n_points: int       = Query(100,  ge=10, le=400, description="Distribution points returned"),
+):
+    """
+    Run the Dirac brane-world FX prediction model for a currency pair.
+
+    Returns the full price-probability distribution (Dirac + Black-Scholes),
+    expected prices, option prices (ATM call), and the chiral charge Q₅
+    (market sentiment proxy).
+
+    kappa=0  → pure relativistic wave (max fat tails)
+    kappa=2  → moderate Dirac mass (recommended)
+    kappa→∞  → exact Black-Scholes recovery
+    """
+    pair = pair.upper()
+    rates = market_data.get_rates()
+    if pair not in rates:
+        raise HTTPException(404, f"Pair {pair} not found in market data")
+
+    spot = rates[pair]
+
+    try:
+        pred = _get_dirac().predict(
+            pair=pair,
+            spot=spot,
+            horizon_days=horizon_days,
+            kappa=kappa,
+            delta_cp=delta_cp,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+    # Downsample for API response
+    n_full  = len(pred.prices)
+    stride  = max(1, n_full // n_points)
+    indices = list(range(0, n_full, stride))[:n_points]
+
+    return {
+        "pair":          pair,
+        "spot":          spot,
+        "horizon_days":  pred.horizon_days,
+        "kappa":         pred.kappa,
+        "delta_cp":      delta_cp,
+        "model":         "1+1D Telegraph/Wilson-Dirac",
+        "distribution": {
+            "prices":     [pred.prices[i]     for i in indices],
+            "prob_dirac": [pred.prob_dirac[i] for i in indices],
+            "prob_bs":    [pred.prob_bs[i]    for i in indices],
+        },
+        "statistics": {
+            "mean_dirac":    pred.mean_dirac,
+            "mean_bs":       pred.mean_bs,
+            "std_log_dirac": pred.var_log_dirac ** 0.5,
+            "std_log_bs":    pred.var_log_bs    ** 0.5,
+            "call_dirac":    pred.call_dirac,
+            "call_bs":       pred.call_bs,
+            "chiral_charge": pred.chiral_charge,
+            "n_steps":       pred.n_steps,
+        },
+        "interpretation": {
+            "chiral_sentiment": (
+                "bullish" if pred.chiral_charge > 0.05
+                else "bearish" if pred.chiral_charge < -0.05
+                else "neutral"
+            ),
+            "extra_vol_pct": round(
+                (pred.var_log_dirac / (pred.var_log_bs + 1e-15) - 1.0) * 100, 2
+            ),
+        },
+    }
+
+
+@router.get("/dirac/bs-test")
+async def dirac_bs_test(
+    S0: float    = Query(1.0,    gt=0),
+    sigma: float = Query(0.082,  gt=0),
+    r: float     = Query(0.0525, ge=0),
+    T: float     = Query(0.0833, gt=0, description="Horizon in years (default 1 month)"),
+    tol: float   = Query(0.05,   gt=0, description="Relative error tolerance"),
+):
+    """Verify Black-Scholes convergence at κ=200 (heavily overdamped limit)."""
+    try:
+        result = _get_dirac().bs_convergence_test(S0=S0, sigma=sigma, r=r, T=T, tol=tol)
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    return result

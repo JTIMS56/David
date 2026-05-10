@@ -2,3 +2,9 @@
 __pycache__/
 *.db
 .env
+
+# C++ build artifacts
+dirac_engine/build/
+*.so
+*.a
+*.o
