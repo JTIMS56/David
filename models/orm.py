@@ -1,0 +1,81 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import DateTime, Float, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column
+
+from database import Base
+
+
+class PriceTick(Base):
+    __tablename__ = "price_ticks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pair: Mapped[str] = mapped_column(String(10), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    bid: Mapped[float] = mapped_column(Float)
+    ask: Mapped[float] = mapped_column(Float)
+    mid: Mapped[float] = mapped_column(Float)
+
+
+class Position(Base):
+    __tablename__ = "positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pair: Mapped[str] = mapped_column(String(10), index=True)
+    direction: Mapped[str] = mapped_column(String(4))   # BUY | SELL
+    size: Mapped[float] = mapped_column(Float)           # in units (lots * 100k)
+    entry_price: Mapped[float] = mapped_column(Float)
+    current_price: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    take_profit: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    unrealised_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    status: Mapped[str] = mapped_column(String(8), default="OPEN")  # OPEN | CLOSED
+    opened_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    close_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    realised_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class Trade(Base):
+    """Immutable log of every order event."""
+    __tablename__ = "trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    pair: Mapped[str] = mapped_column(String(10))
+    action: Mapped[str] = mapped_column(String(8))   # OPEN | CLOSE | SL_HIT | TP_HIT
+    direction: Mapped[str] = mapped_column(String(4))
+    size: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class AgentDecision(Base):
+    __tablename__ = "agent_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    cycle: Mapped[int] = mapped_column(Integer, default=0)
+    market_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actions_taken: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PortfolioSnapshot(Base):
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    balance: Mapped[float] = mapped_column(Float)
+    equity: Mapped[float] = mapped_column(Float)
+    open_positions: Mapped[int] = mapped_column(Integer, default=0)
+    daily_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    total_pnl: Mapped[float] = mapped_column(Float, default=0.0)
