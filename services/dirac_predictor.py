@@ -60,6 +60,8 @@ class DHJPrediction:
     n_steps:            int
     n_paths:            int
     mass_loss_fraction: float        # boundary diagnostic: fraction leaked off grid
+    min_density:        float        # minimum density value (should be ≥ 0)
+    negative_count:     int          # cells with negative density (should be 0)
     horizon_days:       float
     kappa0:             float
     xi:                 float
@@ -160,7 +162,7 @@ class DiracPredictor:
             ctypes.POINTER(ctypes.c_double),  # prob_dhj
             ctypes.POINTER(ctypes.c_double),  # prob_bs
             ctypes.c_int,
-            ctypes.POINTER(ctypes.c_double),  # scalars [11]
+            ctypes.POINTER(ctypes.c_double),  # scalars [13]
         ]
 
         dver = self._lib.dhj_version
@@ -317,7 +319,7 @@ class DiracPredictor:
         prices_arr   = (ctypes.c_double * n)()
         prob_dhj_arr = (ctypes.c_double * n)()
         prob_bs_arr  = (ctypes.c_double * n)()
-        scalars_arr  = (ctypes.c_double * 11)()
+        scalars_arr  = (ctypes.c_double * 13)()
 
         n_fill = self._lib.dhj_predict(
             spot, r_d, r_f, T,               # Garman-Kohlhagen: S0, r_d, r_f, T
@@ -347,6 +349,8 @@ class DiracPredictor:
             n_steps             = int(scalars_arr[8]),
             n_paths             = int(scalars_arr[9]),
             mass_loss_fraction  = scalars_arr[10],
+            min_density         = scalars_arr[11],
+            negative_count      = int(scalars_arr[12]),
             horizon_days        = horizon_days,
             kappa0              = kappa0,
             xi                  = xi,

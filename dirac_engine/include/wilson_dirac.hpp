@@ -83,9 +83,12 @@ public:
             Real mc =              f.minus(j);
             Real mm = (j-1 >= 0) ? f.minus(j-1) : 0.0;
 
-            // ── ψ₊ (right-mover: advects in +x direction, upwind = backward ∇⁻)
-            Real diff_p    = p_.D    * (pp - 2.0*pc + pm) * inv_dx2;
-            Real upwind_p  = -p_.c   * (pc - pm)           * inv_dx;   // −c ∇⁻
+            // ── ψ₊ (right-mover: advects in +x direction)
+            Real diff_p    = p_.D * (pp - 2.0*pc + pm) * inv_dx2;
+            // Wave term: central differences (O(dx²)) — avoids the O(dx) numerical
+            // diffusion of first-order upwind while remaining stable under CFL.
+            // The Wilson diffusion term already damps unphysical high-k modes.
+            Real wave_p    = -p_.c * (pp - pm) * (0.5 * inv_dx);   // −c ∇⁰ψ₊
             // Drift −ν ∂_x ψ: central diff (2nd order) or upwind (1st, stable for large ν)
             Real drift_p, drift_m;
             if (!p_.upwind_nu) {
@@ -97,11 +100,11 @@ public:
             }
             Real mass_p    = -p_.kappa * pc + p_.gamma * mc;
             Real disc_p    = -p_.r   * pc;
-            dp[j] = diff_p + upwind_p + drift_p + mass_p + disc_p;
+            dp[j] = diff_p + wave_p + drift_p + mass_p + disc_p;
 
-            // ── ψ₋ (left-mover: advects in −x direction, upwind = forward ∇⁺)
-            Real diff_m    = p_.D    * (mp - 2.0*mc + mm) * inv_dx2;
-            Real upwind_m  = +p_.c   * (mp - mc)           * inv_dx;   // +c ∇⁺
+            // ── ψ₋ (left-mover: advects in −x direction)
+            Real diff_m    = p_.D * (mp - 2.0*mc + mm) * inv_dx2;
+            Real wave_m    = +p_.c * (mp - mm) * (0.5 * inv_dx);   // +c ∇⁰ψ₋
             if (!p_.upwind_nu) {
                 drift_m = -p_.nu * (mp - mm) * (0.5 * inv_dx);   // central ∇⁰
             } else if (p_.nu >= 0) {
@@ -111,7 +114,7 @@ public:
             }
             Real mass_m    = -p_.kappa * mc + p_.gamma * pc;
             Real disc_m    = -p_.r   * mc;
-            dm[j] = diff_m + upwind_m + drift_m + mass_m + disc_m;
+            dm[j] = diff_m + wave_m + drift_m + mass_m + disc_m;
         }
     }
 

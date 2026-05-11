@@ -78,6 +78,21 @@ public:
         for (int j = 0; j < N_; ++j) { plus_[j] *= inv; minus_[j] *= inv; }
     }
 
+    // Discrete delta initial condition: all probability mass at the single
+    // lattice site closest to x0.  Useful for convergence studies; in production
+    // use init_gaussian with width=dx to avoid slow integral convergence near S₀.
+    // theta∈[0,1]: fraction of mass into ψ₊ (0.5 = BS symmetric).
+    void init_delta(Real x0, Real theta = 0.5) {
+        std::fill(plus_.begin(),  plus_.end(),  0.0);
+        std::fill(minus_.begin(), minus_.end(), 0.0);
+        // Nearest grid site (clamped to interior)
+        int j0 = static_cast<int>(std::round((x0 - x_min_) / dx_));
+        j0 = std::max(1, std::min(N_ - 2, j0));
+        // ψ₊[j0] + ψ₋[j0] = 1/dx  so that ∫ P dx = 1
+        plus_[j0]  = theta       / dx_;
+        minus_[j0] = (1.0-theta) / dx_;
+    }
+
     // ── Observables ───────────────────────────────────────────────────────────
 
     // ∫ P(x) dx  (should stay ≈ 1 for undiscounted evolution)

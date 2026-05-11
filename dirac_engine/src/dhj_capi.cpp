@@ -14,9 +14,10 @@ extern "C" {
  * Dirac params:  kappa0, kappa1, delta_cp
  * Jump params:   lambda, p_up, eta_plus, eta_minus
  *
- * scalars_out[11] = {mean_dhj, mean_bs, var_dhj, var_bs,
+ * scalars_out[13] = {mean_dhj, mean_bs, var_dhj, var_bs,
  *                    call_dhj, call_bs, chiral, avg_var,
- *                    n_steps, n_paths, mass_loss_fraction}
+ *                    n_steps, n_paths, mass_loss_fraction,
+ *                    min_density, negative_count}
  *
  * Returns: actual points filled, or -1 on error.
  */
@@ -34,7 +35,7 @@ int dhj_predict(
     // Output arrays
     double* prices_out, double* prob_dhj_out, double* prob_bs_out,
     int n_out,
-    double* scalars_out   // length 11
+    double* scalars_out   // length 13
 ) {
     try {
         DHJInput in;
@@ -83,6 +84,8 @@ int dhj_predict(
             scalars_out[8]  = (double)out.n_steps;
             scalars_out[9]  = (double)out.n_paths;
             scalars_out[10] = out.mass_loss_fraction;
+            scalars_out[11] = out.min_density;
+            scalars_out[12] = (double)out.negative_count;
         }
         return n_fill;
     } catch (const std::exception& e) {

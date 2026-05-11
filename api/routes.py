@@ -504,6 +504,8 @@ async def dhj_predict_endpoint(
             "n_steps":            pred.n_steps,
             "n_paths":            pred.n_paths,
             "mass_loss_fraction": pred.mass_loss_fraction,
+            "min_density":        pred.min_density,
+            "negative_count":     pred.negative_count,
         },
         "interpretation": {
             "chiral_sentiment": (

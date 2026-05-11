@@ -33,8 +33,11 @@ target_include_directories(dirac_demo PRIVATE include)
 add_executable(dhj_demo examples/dhj_demo.cpp)
 target_include_directories(dhj_demo PRIVATE include)
 
+add_executable(convergence_test examples/convergence_test.cpp)
+target_include_directories(convergence_test PRIVATE include)
+
 # ── Install ───────────────────────────────────────────────────────────────────
-install(TARGETS dirac_fx dirac_demo dhj_demo
+install(TARGETS dirac_fx dirac_demo dhj_demo convergence_test
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
@@ -45,4 +48,4 @@ message(STATUS "DiracFX ${PROJECT_VERSION}")
 message(STATUS "  Build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ std    : C++${CMAKE_CXX_STANDARD}")
 message(STATUS "  Shared lib : dirac_fx (Dirac + DHJ APIs)")
-message(STATUS "  Demos      : dirac_demo  dhj_demo")
+message(STATUS "  Demos      : dirac_demo  dhj_demo  convergence_test")
