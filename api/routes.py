@@ -21,6 +21,7 @@ from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
 from services.risk_gate import risk_gate
+from services.model_registry import model_registry
 from agents.trading_agent import trading_agent
 
 router = APIRouter(prefix="/api")
@@ -264,6 +265,30 @@ async def set_manual_only(enabled: bool):
     return {"manual_only_active": enabled}
 
 
+@router.post("/risk/shadow-mode")
+async def set_shadow_mode(enabled: bool):
+    """
+    Toggle shadow (dry-run) mode.
+    enabled=true  → orders are evaluated and logged but never executed
+    enabled=false → normal execution mode
+    Use this to observe agent behaviour without real (paper) trades.
+    """
+    risk_gate.set_shadow_mode(enabled)
+    return {"shadow_mode_active": enabled}
+
+
+@router.post("/risk/reset-drawdown")
+async def reset_drawdown_breaker():
+    """
+    Reset the drawdown circuit-breaker and deactivate the kill switch.
+    Only call this after investigating the cause of the drawdown.
+    """
+    if not risk_gate.drawdown_triggered:
+        return {"message": "Drawdown breaker was not active", "kill_switch_active": risk_gate.kill_switch_active}
+    risk_gate.deactivate_kill_switch()
+    return {"message": "Drawdown breaker reset; kill switch deactivated", "kill_switch_active": False}
+
+
 @router.get("/audit")
 async def get_audit_log(
     limit: int = Query(50, ge=1, le=500),
@@ -355,6 +380,15 @@ async def dirac_predict(
         raise HTTPException(503, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
+
+    # Record in model registry (fire-and-forget)
+    import asyncio as _asyncio
+    _asyncio.create_task(model_registry.record(
+        model="Dirac", pair=pair, spot=spot, horizon_days=horizon_days,
+        params={"kappa": kappa, "delta_cp": delta_cp, "n_sites": n_sites},
+        mean_model=pred.mean_dirac, call_model=pred.call_dirac, call_bs=pred.call_bs,
+        chiral_charge=pred.chiral_charge, n_steps=pred.n_steps,
+    ))
 
     # Downsample for API response
     n_full  = len(pred.prices)
@@ -473,6 +507,18 @@ async def dhj_predict_endpoint(
     except RuntimeError as e:
         raise HTTPException(500, str(e))
 
+    # Record in model registry (fire-and-forget)
+    asyncio.create_task(model_registry.record(
+        model="DHJ", pair=pair, spot=spot, horizon_days=horizon_days,
+        params={"kappa_H": kappa_H, "xi": xi, "rho": rho,
+                "kappa0": kappa0, "kappa1": kappa1,
+                "jump_lambda": jump_lambda, "jump_p_up": jump_p_up,
+                "n_paths": n_paths},
+        mean_model=pred.mean_dhj, call_model=pred.call_dhj, call_bs=pred.call_bs,
+        chiral_charge=pred.chiral_charge, n_steps=pred.n_steps,
+        mass_loss_fraction=pred.mass_loss_fraction, negative_count=pred.negative_count,
+    ))
+
     n_full  = len(pred.prices)
     stride  = max(1, n_full // n_points)
     indices = list(range(0, n_full, stride))[:n_points]
@@ -520,3 +566,18 @@ async def dhj_predict_endpoint(
             "jump_risk":      "yes" if jump_lambda > 0.5 else "no",
         },
     }
+
+
+# ── Model Registry ────────────────────────────────────────────────────────────
+
+@router.get("/registry")
+async def get_model_registry(
+    model: Optional[str] = None,
+    pair:  Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+):
+    """
+    Model registry: every DHJ/Dirac prediction call with exact params + git commit.
+    Provides full auditability linking agent decisions to model versions.
+    """
+    return await model_registry.get_runs(model=model, pair=pair, limit=limit)

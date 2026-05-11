@@ -30,6 +30,7 @@ from services.risk_manager import RiskManager, risk_manager as _rm_sentinel
 import services.risk_manager as _risk_mod
 from agents.trading_agent import trading_agent
 from api.routes import router
+from services.risk_gate import risk_gate
 
 logging.basicConfig(
     level=logging.INFO,
@@ -117,6 +118,9 @@ async def lifespan(app: FastAPI):
     # Wire up portfolio → risk manager
     _risk_mod.risk_manager = RiskManager(portfolio_service)
 
+    # Apply config-driven risk limits to the hard gate
+    risk_gate._max_drawdown_pct = settings.max_drawdown_pct
+
     # Wire up order service broadcast
     order_service.set_broadcast(manager.broadcast)
 
@@ -179,23 +183,43 @@ async def serve_dashboard():
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
+_WS_CONTROL_CMDS = {"run_agent", "start_agent", "stop_agent"}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
+    _authenticated = not bool(settings.ws_token)   # no token configured → open
     try:
         while True:
             data = await websocket.receive_text()
-            # Handle client commands
             try:
                 msg = json.loads(data)
-                cmd = msg.get("cmd")
-                if cmd == "run_agent":
-                    asyncio.create_task(trading_agent.run_once())
-                elif cmd == "start_agent":
-                    asyncio.create_task(trading_agent.start())
-                elif cmd == "stop_agent":
-                    asyncio.create_task(trading_agent.stop())
             except Exception:
-                pass
+                continue
+
+            cmd = msg.get("cmd")
+
+            # Auth handshake: client sends {"cmd": "auth", "token": "<secret>"}
+            if cmd == "auth":
+                if not settings.ws_token or msg.get("token") == settings.ws_token:
+                    _authenticated = True
+                    await websocket.send_text(json.dumps({"event": "auth", "ok": True}))
+                else:
+                    await websocket.send_text(json.dumps({"event": "auth", "ok": False, "reason": "bad token"}))
+                continue
+
+            # Control commands require authentication when a token is configured
+            if cmd in _WS_CONTROL_CMDS and not _authenticated:
+                await websocket.send_text(json.dumps({"event": "error", "reason": "not authenticated"}))
+                continue
+
+            if cmd == "run_agent":
+                asyncio.create_task(trading_agent.run_once())
+            elif cmd == "start_agent":
+                asyncio.create_task(trading_agent.start())
+            elif cmd == "stop_agent":
+                asyncio.create_task(trading_agent.stop())
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)

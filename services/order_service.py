@@ -143,6 +143,21 @@ class OrderService:
             )
             return False, f"Order blocked: {decision.reason}", None
 
+        # ── Shadow mode: log and return without executing ──────────────────────
+        if decision.shadow:
+            logger.info(
+                "SHADOW [%s %s %s @ %.5f]: logged only — not executed",
+                direction, size, pair, entry_price,
+            )
+            await _write_audit(
+                source=source, event_type="SHADOW_ORDER",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=True, gate_reason=decision.reason,
+                details={"spread_pips": spread, "data_age_s": round(data_age, 1), "shadow": True},
+            )
+            return True, f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f}", None
+
         # ── Write position + trade atomically ─────────────────────────────────
         async with AsyncSessionLocal() as db:
             pos = Position(
@@ -291,6 +306,15 @@ class OrderService:
             try:
                 await portfolio_service.update_unrealised_pnl()
                 await self.check_sl_tp()
+                # Drawdown circuit-breaker
+                state = await portfolio_service.get_state()
+                if risk_gate.check_drawdown(state["drawdown_pct"]):
+                    await _write_audit(
+                        source="system", event_type="DRAWDOWN_BREAKER",
+                        gate_allowed=False,
+                        gate_reason=risk_gate.status()["kill_switch_reason"],
+                        details={"drawdown_pct": state["drawdown_pct"]},
+                    )
             except Exception:
                 logger.exception("Error in SL/TP monitor loop")
             await asyncio.sleep(interval)

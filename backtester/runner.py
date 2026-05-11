@@ -25,6 +25,7 @@ import pandas as pd
 from scipy import stats
 
 from .benchmarks import default_benchmark_suite
+from .calibrator import WalkForwardCalibrator
 from .data import load_prices, estimate_realized_vol, compute_log_returns
 from .metrics import (
     BacktestRecord, log_likelihood, crps_from_cdf, pit_score,
@@ -88,6 +89,7 @@ class BacktestRunner:
         csv_path: Optional[str] = None,
         dhj_params: Optional[dict] = None,
         r: float = 0.0525,
+        use_calibration: bool = False,    # refit Heston params each window
     ):
         self.pair = pair
         self.horizon_days = horizon_days
@@ -95,6 +97,8 @@ class BacktestRunner:
         self.vol_window = vol_window
         self.r = r
         self.dhj_params = dhj_params or _DEFAULT_DHJ
+        self.use_calibration = use_calibration
+        self._calibrator = WalkForwardCalibrator(vol_window=vol_window) if use_calibration else None
 
         self.prices = load_prices(pair, start, end, csv_path)
         self.rvol   = estimate_realized_vol(self.prices, vol_window)
@@ -140,13 +144,25 @@ class BacktestRunner:
             if np.isnan(vol_est) or vol_est <= 0:
                 vol_est = 0.085  # fallback
 
+            past_rets = log_returns.iloc[:i].values
+
             try:
+                # Walk-forward calibration: refit Heston params from trailing history
+                step_params = dict(self.dhj_params)
+                if self._calibrator is not None:
+                    cal = self._calibrator.calibrate(past_rets)
+                    step_params.update(cal.to_dhj_kwargs())
+                    logger.debug(
+                        "Calibrated at %s: kappa_H=%.2f xi=%.2f rho=%.2f",
+                        d.date(), cal.kappa_H, cal.xi, cal.rho,
+                    )
+
                 pred = predictor.predict_dhj(
                     pair=self.pair,
                     spot=S0,
                     horizon_days=self.horizon_days,
                     seed=seed_base + k,
-                    **self.dhj_params,
+                    **step_params,
                 )
                 bs_pred = predictor.predict(
                     pair=self.pair,
@@ -186,7 +202,6 @@ class BacktestRunner:
             results.records.append(rec)
 
             # Score benchmark models at the same date
-            past_rets = log_returns.iloc[:i].values
             for bm in benchmarks:
                 try:
                     from services.dirac_predictor import _PAIR_PARAMS
@@ -231,9 +246,10 @@ class BacktestRunner:
         ks  = pit_uniformity_test(pit)
         df  = results.to_dataframe()
 
+        calib_flag = " [walk-forward calibration ON]" if self.use_calibration else ""
         lines = [
             f"\n{'='*60}",
-            f"  DHJ Backtest: {results.pair}  horizon={results.horizon_days}d  n={len(results.records)}",
+            f"  DHJ Backtest: {results.pair}  horizon={results.horizon_days}d  n={len(results.records)}{calib_flag}",
             f"{'='*60}",
             f"  Mean log-likelihood : {results.mean_ll:.4f}",
             f"  Mean CRPS           : {results.mean_crps:.6f}",

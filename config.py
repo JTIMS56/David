@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     market_data_mode: str = "simulation"
     alpha_vantage_key: str = ""
 
+    # WebSocket security
+    ws_token: str = ""          # shared secret; empty = no auth (dev only)
+
+    # Risk circuit-breakers
+    max_drawdown_pct: float = 10.0    # activate kill switch at this drawdown %
+
     # DB
     database_url: str = "sqlite+aiosqlite:///./fx_trading.db"
 

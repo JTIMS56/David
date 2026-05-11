@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -79,6 +79,34 @@ class PortfolioSnapshot(Base):
     open_positions: Mapped[int] = mapped_column(Integer, default=0)
     daily_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     total_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class ModelRun(Base):
+    """
+    Model registry: every DHJ/Dirac prediction call is recorded here.
+    Links agent decisions to the exact model version and parameters used.
+    """
+    __tablename__ = "model_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    model: Mapped[str] = mapped_column(String(20), index=True)     # "DHJ" | "Dirac"
+    pair: Mapped[str] = mapped_column(String(10), index=True)
+    spot: Mapped[float] = mapped_column(Float)
+    horizon_days: Mapped[float] = mapped_column(Float)
+    params: Mapped[Optional[str]] = mapped_column(Text, nullable=True)    # JSON
+    git_commit: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # Output scalars
+    mean_model: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    call_model: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    call_bs: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    chiral_charge: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Diagnostics
+    n_steps: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    mass_loss_fraction: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    negative_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Link to agent decision that triggered this run (nullable for API calls)
+    agent_decision_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class AuditLog(Base):
