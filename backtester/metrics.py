@@ -66,7 +66,7 @@ def crps_from_cdf(
     cdf = np.cumsum(p * ds)
     cdf = cdf / max(cdf[-1], 1e-15)  # normalise to [0,1]
     indicator = (s >= S_realized).astype(float)
-    return float(np.trapz((cdf - indicator) ** 2, s))
+    return float(np.trapezoid((cdf - indicator) ** 2, s))
 
 
 def pit_score(
