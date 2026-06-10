@@ -81,6 +81,62 @@ def synthetic_gbm(
     return series
 
 
+def synthetic_heston_kou(
+    pair: str,
+    start: str = "2019-01-01",
+    end: str = "2024-12-31",
+    S0: float = 1.085,
+    theta_vol: float = 0.080,    # long-run vol
+    v0_vol: float = 0.080,       # starting vol
+    kappa_H: float = 2.5,        # vol mean-reversion (half-life ≈ 10 weeks)
+    xi: float = 0.30,            # vol-of-vol
+    rho: float = -0.35,          # leverage
+    vol_floor: float = 0.040,    # reflective floor (FX vol never truly dies)
+    jump_lambda: float = 15.0,   # jumps per year
+    jump_p_up: float = 0.30,     # mostly down-jumps (FX crash asymmetry)
+    jump_mean_up: float = 0.006,
+    jump_mean_down: float = 0.008,
+    jump_cap: float = 0.025,     # max single jump (FX moves are bounded)
+    r: float = 0.0125,           # carry drift
+    seed: int = 42,
+) -> pd.Series:
+    """
+    Synthetic FX with the three stylized facts real FX exhibits:
+    vol clustering (Heston), leverage (ρ<0), and asymmetric jump tails (Kou).
+    Drift is jump-compensated so E[S_T] = S0·exp(r·T).
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range(start, end)
+    n, dt = len(dates), 1.0 / 252
+    theta = theta_vol ** 2
+    v = v0_vol ** 2
+    eta_p, eta_m = 1.0 / jump_mean_up, 1.0 / jump_mean_down
+    zeta = (jump_p_up * eta_p / (eta_p - 1)
+            + (1 - jump_p_up) * eta_m / (eta_m + 1) - 1)  # Kou compensator
+
+    x = np.log(S0)
+    log_p = np.empty(n)
+    for i in range(n):
+        zv = rng.standard_normal()
+        zs = rho * zv + np.sqrt(1 - rho * rho) * rng.standard_normal()
+        x += (r - 0.5 * v - jump_lambda * zeta) * dt + np.sqrt(v * dt) * zs
+        for _ in range(rng.poisson(jump_lambda * dt)):
+            if rng.random() < jump_p_up:
+                x += min(rng.exponential(jump_mean_up), jump_cap)
+            else:
+                x -= min(rng.exponential(jump_mean_down), jump_cap)
+        # Milstein CIR step with reflective vol floor
+        v = v + kappa_H * (theta - v) * dt \
+              + xi * np.sqrt(max(v, 0.0) * dt) * zv \
+              + 0.25 * xi * xi * dt * (zv * zv - 1.0)
+        v = max(v, vol_floor * vol_floor)
+        log_p[i] = x
+
+    series = pd.Series(np.exp(log_p), index=dates, name=pair)
+    logger.info("Generated %d synthetic Heston-Kou prices for %s", n, pair)
+    return series
+
+
 def load_prices(
     pair: str,
     start: str = "2019-01-01",

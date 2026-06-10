@@ -293,6 +293,9 @@ class DiracPredictor:
         n_paths: int         = 300,
         n_sites: int         = 400,
         seed: int            = 0,
+        # Vol overrides (annualised diffusive vols; None → pair default)
+        sigma: Optional[float]    = None,   # current vol  → v0
+        sigma_lr: Optional[float] = None,   # long-run vol → theta (None → = sigma)
     ) -> "DHJPrediction":
         """
         Run the Dirac-Heston-Jump hybrid model.
@@ -308,11 +311,11 @@ class DiracPredictor:
         n_paths MC paths are averaged; ~300 gives good accuracy in <2s.
         """
         params = _PAIR_PARAMS.get(pair.upper(), {"sigma": 0.085, "r": 0.0500, "r_f": 0.0})
-        sigma  = params["sigma"]
+        sigma  = sigma if sigma is not None else params["sigma"]
         r_d    = params["r"]
         r_f    = params.get("r_f", 0.0)
-        v0     = sigma * sigma
-        theta  = v0          # start at long-run variance = initial variance
+        v0     = sigma * sigma                       # current variance
+        theta  = (sigma_lr * sigma_lr) if sigma_lr is not None else v0  # long-run
         T      = horizon_days / 365.0
         n      = n_sites
 

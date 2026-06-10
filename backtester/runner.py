@@ -150,7 +150,7 @@ class BacktestRunner:
                 # Walk-forward calibration: refit Heston params from trailing history
                 step_params = dict(self.dhj_params)
                 if self._calibrator is not None:
-                    cal = self._calibrator.calibrate(past_rets)
+                    cal = self._calibrator.calibrate(past_rets, horizon_days=self.horizon_days)
                     step_params.update(cal.to_dhj_kwargs())
                     logger.debug(
                         "Calibrated at %s: kappa_H=%.2f xi=%.2f rho=%.2f",
@@ -281,14 +281,23 @@ class BacktestRunner:
                 f"  {'DHJ (this model)':<20}  {results.mean_ll:>9.4f}  "
                 f"{results.mean_crps:>10.6f}  {100*results.coverage_rate:>8.1f}%"
             )
+            dhj_ll = [r.log_likelihood for r in results.records]
             for name, acc in bench.items():
                 if not acc["ll"]:
                     continue
                 m_ll   = float(np.mean(acc["ll"]))
                 m_crps = float(np.mean(acc["crps"]))
                 m_cov  = 100.0 * float(np.mean(acc["cov"]))
+                # Diebold-Mariano: is DHJ's LL significantly better than this benchmark's?
+                m = min(len(dhj_ll), len(acc["ll"]))
+                dm = diebold_mariano(dhj_ll[:m], acc["ll"][:m])
+                sig = ("p={:.4f} {}".format(
+                    dm["p_value"],
+                    "DHJ better*" if (dm["A_better"] and dm["p_value"] < 0.05)
+                    else ("bench better*" if (not dm["A_better"] and dm["p_value"] < 0.05)
+                          else "n.s.")))
                 lines.append(
-                    f"  {name:<20}  {m_ll:>9.4f}  {m_crps:>10.6f}  {m_cov:>8.1f}%"
+                    f"  {name:<20}  {m_ll:>9.4f}  {m_crps:>10.6f}  {m_cov:>8.1f}%   DM {sig}"
                 )
 
         lines.append("=" * 60)

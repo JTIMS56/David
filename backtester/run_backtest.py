@@ -42,6 +42,8 @@ def main():
     parser.add_argument("--csv",       default=None, help="CSV file with date,price columns")
     parser.add_argument("--output",    default=None, help="Save results to CSV")
     parser.add_argument("--synthetic", action="store_true", help="Use synthetic GBM data")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Walk-forward calibration: refit sigma, Heston, and jump params each window")
     args = parser.parse_args()
 
     from backtester.runner import BacktestRunner, _DEFAULT_DHJ
@@ -65,6 +67,7 @@ def main():
         step_days=args.step,
         csv_path=csv_path,
         dhj_params=dhj_params,
+        use_calibration=args.calibrate,
     )
 
     results = runner.run()
