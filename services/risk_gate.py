@@ -152,18 +152,18 @@ class RiskGate:
             return GateDecision(
                 False,
                 "System in manual-only mode — agent orders suspended",
-                checks=checks,
+                checks_run=checks,
             )
 
         # 3. Shadow mode — gate passes but execution is skipped by OrderService
         checks.append("shadow_mode")
         if self._shadow_mode:
-            return GateDecision(True, "Shadow mode: order logged but not executed", shadow=True, checks=checks)
+            return GateDecision(True, "Shadow mode: order logged but not executed", shadow=True, checks_run=checks)
 
         # 4. Stop-loss required (enforced at service layer, not just advisory)
         checks.append("stop_loss_required")
         if stop_loss is None:
-            return GateDecision(False, "Stop-loss is required for every order", checks=checks)
+            return GateDecision(False, "Stop-loss is required for every order", checks_run=checks)
 
         # 5. Data freshness
         checks.append("data_freshness")
@@ -171,7 +171,7 @@ class RiskGate:
             return GateDecision(
                 False,
                 f"Market data stale: {data_age_seconds:.0f}s > {self._data_stale_seconds:.0f}s limit",
-                checks=checks,
+                checks_run=checks,
             )
 
         # 6. Spread guard
@@ -180,19 +180,19 @@ class RiskGate:
             return GateDecision(
                 False,
                 f"Spread {spread_pips:.1f} pips exceeds max {self._max_spread_pips:.1f}",
-                checks=checks,
+                checks_run=checks,
             )
 
         # 7. Sanity: valid size, direction, price
         checks.append("sanity")
         if size <= 0:
-            return GateDecision(False, f"Invalid size: {size}", checks=checks)
+            return GateDecision(False, f"Invalid size: {size}", checks_run=checks)
         if entry_price <= 0:
-            return GateDecision(False, f"Invalid price: {entry_price}", checks=checks)
+            return GateDecision(False, f"Invalid price: {entry_price}", checks_run=checks)
         if direction not in ("BUY", "SELL"):
-            return GateDecision(False, f"Invalid direction: {direction!r}", checks=checks)
+            return GateDecision(False, f"Invalid direction: {direction!r}", checks_run=checks)
 
-        return GateDecision(True, "All gate checks passed", checks=checks)
+        return GateDecision(True, "All gate checks passed", checks_run=checks)
 
 
 # Singleton — wired by main.py

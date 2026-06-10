@@ -7,7 +7,9 @@ import json
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from api.auth import require_api_key
 from sqlalchemy import select, desc
 
 from config import settings
@@ -24,7 +26,7 @@ from services.risk_gate import risk_gate
 from services.model_registry import model_registry
 from agents.trading_agent import trading_agent
 
-router = APIRouter(prefix="/api")
+router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 
 
 # ── System ────────────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ from typing import Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
@@ -163,10 +163,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
 
 app.include_router(router)
@@ -179,6 +179,46 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 @app.get("/", include_in_schema=False)
 async def serve_dashboard():
     return FileResponse(str(static_dir / "index.html"))
+
+
+# ── Health checks (public — no auth required) ─────────────────────────────────
+
+@app.get("/health", tags=["ops"], include_in_schema=False)
+async def health():
+    """Liveness probe — returns 200 as long as the process is alive."""
+    return {"status": "ok"}
+
+
+@app.get("/readiness", tags=["ops"], include_in_schema=False)
+async def readiness():
+    """
+    Readiness probe — checks DB connectivity and market data feed.
+    Returns 503 if not ready so the load balancer withholds traffic.
+    """
+    issues = []
+    # DB check
+    try:
+        from database import AsyncSessionLocal
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        issues.append(f"db: {exc}")
+
+    # Market data check
+    try:
+        prices = market_data.get_all_prices()
+        if not prices:
+            issues.append("market_data: no prices available")
+    except Exception as exc:
+        issues.append(f"market_data: {exc}")
+
+    if issues:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "issues": issues},
+        )
+    return {"status": "ready", "pairs": len(market_data.get_all_prices())}
 
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
