@@ -8,7 +8,16 @@ from sqlalchemy.orm import DeclarativeBase
 
 from config import settings
 
-engine = create_async_engine(settings.database_url, echo=False)
+
+def _normalize_db_url(url: str) -> str:
+    # DigitalOcean and Heroku inject postgresql:// — SQLAlchemy async requires postgresql+asyncpg://
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+
+engine = create_async_engine(_normalize_db_url(settings.database_url), echo=False)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
