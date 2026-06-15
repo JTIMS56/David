@@ -4,10 +4,18 @@ import json
 import logging
 from typing import List
 
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_origins(raw: str) -> List[str]:
+    """Accept plain URL, comma-separated list, or JSON array string."""
+    raw = raw.strip()
+    if raw.startswith("["):
+        return json.loads(raw)
+    return [o.strip() for o in raw.split(",") if o.strip()]
 
 
 class Settings(BaseSettings):
@@ -34,9 +42,11 @@ class Settings(BaseSettings):
     alpha_vantage_key: str = ""
 
     # ── Security ──────────────────────────────────────────────────────────────
-    api_key: str = ""          # Protect all /api/* routes. REQUIRED in production.
-    ws_token: str = ""         # Protect WebSocket control commands.
-    allowed_origins: List[str] = ["*"]   # Set to your domain in production.
+    api_key: str = ""
+    ws_token: str = ""
+    # Store as plain string; use settings.get_allowed_origins() where a list is needed.
+    # Accepts: "https://a.com", "https://a.com,https://b.com", or '["https://a.com"]'
+    allowed_origins: str = "*"
 
     # ── Risk circuit-breakers ─────────────────────────────────────────────────
     max_drawdown_pct: float = 10.0
@@ -51,18 +61,10 @@ class Settings(BaseSettings):
     ]
 
     # ── Environment ───────────────────────────────────────────────────────────
-    environment: str = "development"     # "development" | "production"
+    environment: str = "development"
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def _parse_origins(cls, v: object) -> object:
-        # Accept both a plain comma-separated string and a JSON array string
-        if isinstance(v, str):
-            v = v.strip()
-            if v.startswith("["):
-                return json.loads(v)
-            return [o.strip() for o in v.split(",") if o.strip()]
-        return v
+    def get_allowed_origins(self) -> List[str]:
+        return _parse_origins(self.allowed_origins)
 
     class Config:
         env_file = ".env"
@@ -73,10 +75,9 @@ class Settings(BaseSettings):
         if self.environment == "production":
             if not self.api_key:
                 logger.warning(
-                    "⚠️  API_KEY is not set — all /api/* endpoints are UNPROTECTED. "
-                    "Set API_KEY in your .env file before going live."
+                    "⚠️  API_KEY is not set — all /api/* endpoints are UNPROTECTED."
                 )
-            if self.allowed_origins == ["*"]:
+            if self.allowed_origins.strip() in ("*", '["*"]'):
                 logger.warning(
                     "⚠️  ALLOWED_ORIGINS is '*' — restrict to your domain in production."
                 )
