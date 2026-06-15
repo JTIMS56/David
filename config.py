@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import List
 
-from pydantic import Field, model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,17 @@ class Settings(BaseSettings):
 
     # ── Environment ───────────────────────────────────────────────────────────
     environment: str = "development"     # "development" | "production"
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _parse_origins(cls, v: object) -> object:
+        # Accept both a plain comma-separated string and a JSON array string
+        if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("["):
+                return json.loads(v)
+            return [o.strip() for o in v.split(",") if o.strip()]
+        return v
 
     class Config:
         env_file = ".env"
