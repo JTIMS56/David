@@ -249,6 +249,18 @@
 </div>
 
 <script>
+// ── Auth ────────────────────────────────────────────────────────────────────
+let _apiKey = localStorage.getItem('david_api_key') || '';
+if (!_apiKey) {
+  _apiKey = prompt('Enter your API key to access the dashboard:') || '';
+  if (_apiKey) localStorage.setItem('david_api_key', _apiKey);
+}
+const authHeaders = () => _apiKey ? { 'X-API-Key': _apiKey } : {};
+const apiFetch = (url, opts = {}) => fetch(url, {
+  ...opts,
+  headers: { ...authHeaders(), ...(opts.headers || {}) },
+});
+
 // ── Utilities ───────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const fmt = (n, d=2) => (n === null || n === undefined) ? '—' :
@@ -462,7 +474,7 @@ function updateAgentBadge(agent) {
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
 async function fetchPositions() {
-  const r = await fetch('/api/positions?status=open');
+  const r = await apiFetch('/api/positions?status=open');
   const data = await r.json();
   const tbody = $('positions-tbody');
   if (!data.length) {
@@ -488,7 +500,7 @@ async function fetchPositions() {
 }
 
 async function fetchTrades() {
-  const r = await fetch('/api/trades?limit=30');
+  const r = await apiFetch('/api/trades?limit=30');
   const data = await r.json();
   const tbody = $('trades-tbody');
   if (!data.length) {
@@ -511,7 +523,7 @@ async function fetchTrades() {
 }
 
 async function fetchDecisions() {
-  const r = await fetch('/api/agent/decisions?limit=10');
+  const r = await apiFetch('/api/agent/decisions?limit=10');
   const data = await r.json();
   const log = $('decision-log');
   if (!data.length) {
@@ -537,7 +549,7 @@ async function fetchDecisions() {
 }
 
 async function fetchPortfolioHistory() {
-  const r = await fetch('/api/portfolio/history?limit=200');
+  const r = await apiFetch('/api/portfolio/history?limit=200');
   const data = await r.json();
   if (data.length) {
     equityData = data.map(d => ({ equity: d.equity, ts: new Date(d.timestamp).getTime() }));
@@ -546,7 +558,7 @@ async function fetchPortfolioHistory() {
 }
 
 async function fetchTotalPnL() {
-  const r = await fetch('/api/portfolio');
+  const r = await apiFetch('/api/portfolio');
   const p = await r.json();
   $('m-total-pnl').textContent = `Total: ${pnlSign(p.total_pnl)}${fmtUSD(p.total_pnl)}`;
   $('m-total-pnl').className = 'metric-sub ' + pnlClass(p.total_pnl);
@@ -555,14 +567,14 @@ async function fetchTotalPnL() {
 // ── Actions ──────────────────────────────────────────────────────────────────
 async function closePos(id) {
   if (!confirm(`Close position #${id}?`)) return;
-  await fetch(`/api/positions/${id}`, { method: 'DELETE' });
+  await apiFetch(`/api/positions/${id}`, { method: 'DELETE' });
   fetchPositions(); fetchTrades();
 }
 
 $('btn-run-once').onclick = async () => {
   $('btn-run-once').disabled = true;
   $('btn-run-once').textContent = 'Running…';
-  try { await fetch('/api/agent/run-once', { method: 'POST' }); }
+  try { await apiFetch('/api/agent/run-once', { method: 'POST' }); }
   finally {
     $('btn-run-once').disabled = false;
     $('btn-run-once').textContent = 'Run Now';
@@ -570,10 +582,10 @@ $('btn-run-once').onclick = async () => {
   }
 };
 $('btn-start-agent').onclick = async () => {
-  await fetch('/api/agent/start', { method: 'POST' });
+  await apiFetch('/api/agent/start', { method: 'POST' });
 };
 $('btn-stop-agent').onclick = async () => {
-  await fetch('/api/agent/stop', { method: 'POST' });
+  await apiFetch('/api/agent/stop', { method: 'POST' });
 };
 
 // ── Clock ────────────────────────────────────────────────────────────────────
