@@ -572,13 +572,22 @@ async function closePos(id) {
 }
 
 $('btn-run-once').onclick = async () => {
-  $('btn-run-once').disabled = true;
-  $('btn-run-once').textContent = 'Running…';
-  try { await apiFetch('/api/agent/run-once', { method: 'POST' }); }
-  finally {
-    $('btn-run-once').disabled = false;
-    $('btn-run-once').textContent = 'Run Now';
-    fetchDecisions(); fetchPositions(); fetchTrades(); fetchTotalPnL();
+  const btn = $('btn-run-once');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    await apiFetch('/api/agent/run-once', { method: 'POST' });
+    btn.textContent = 'Running (check in ~30s)';
+    // Poll for new decision every 10s for up to 3 minutes
+    let polls = 0;
+    const poll = setInterval(async () => {
+      await fetchDecisions();
+      polls++;
+      if (polls >= 18) { clearInterval(poll); btn.disabled = false; btn.textContent = 'Run Now'; }
+    }, 10_000);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Run Now';
   }
 };
 $('btn-start-agent').onclick = async () => {

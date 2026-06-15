@@ -110,8 +110,19 @@ class TradingAgent:
         try:
             return await self._claude_cycle()
         except Exception as e:
-            logger.error(f"Agent cycle error: {e}", exc_info=True)
-            return {"cycle": self._cycle, "error": str(e), "actions": []}
+            logger.error(f"Agent cycle {self._cycle} error: {e}", exc_info=True)
+            error_msg = str(e)
+            try:
+                await self._save_decision(
+                    market_summary="",
+                    reasoning=f"Cycle {self._cycle} failed: {error_msg}",
+                    actions=[f"ERROR: {error_msg}"],
+                    input_tokens=0,
+                    output_tokens=0,
+                )
+            except Exception:
+                logger.exception("Failed to save error decision to DB")
+            return {"cycle": self._cycle, "error": error_msg, "actions": []}
 
     async def _claude_cycle(self) -> Dict[str, Any]:
         """Full Claude-powered agentic trading cycle with tool use."""
@@ -317,7 +328,10 @@ class TradingAgent:
 
     async def _scheduler_loop(self) -> None:
         while self._running:
-            await self.run_once()
+            try:
+                await self.run_once()
+            except Exception:
+                logger.exception("Unhandled error in scheduler — cycle skipped")
             self._next_run = datetime.fromtimestamp(
                 datetime.now(timezone.utc).timestamp() + settings.agent_interval_seconds,
                 tz=timezone.utc,

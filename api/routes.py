@@ -206,7 +206,44 @@ async def stop_agent():
 
 @router.post("/agent/run-once")
 async def run_agent_once():
-    result = await trading_agent.run_once()
+    """Fire a single trading cycle in the background and return immediately.
+    A full Claude agentic cycle can take several minutes; waiting synchronously
+    would exceed infrastructure HTTP timeouts and cancel the cycle mid-flight.
+    Poll /api/agent/decisions or /api/agent/status for results."""
+    import asyncio as _asyncio
+    _asyncio.create_task(trading_agent.run_once())
+    return {
+        "message": "Cycle started in background",
+        "cycle": trading_agent._cycle + 1,
+        "hint": "Check /api/agent/decisions in ~30s for results",
+    }
+
+
+@router.get("/agent/ping")
+async def agent_ping():
+    """Validate Anthropic API key and agent readiness without running a full cycle."""
+    import anthropic as _anthropic
+    result = {
+        "scheduler_running": trading_agent._running,
+        "current_cycle": trading_agent._cycle,
+        "last_run": trading_agent._last_run.isoformat() if trading_agent._last_run else None,
+        "next_run": trading_agent._next_run.isoformat() if trading_agent._next_run else None,
+        "api_key_configured": bool(settings.anthropic_api_key),
+        "api_key_valid": None,
+        "api_key_error": None,
+    }
+    if settings.anthropic_api_key:
+        try:
+            client = _anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+            await client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=5,
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            result["api_key_valid"] = True
+        except Exception as exc:
+            result["api_key_valid"] = False
+            result["api_key_error"] = str(exc)
     return result
 
 
