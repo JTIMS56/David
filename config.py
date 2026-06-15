@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # ── Market data ───────────────────────────────────────────────────────────
     market_data_mode: str = "simulation"  # "simulation" | "live"
     alpha_vantage_key: str = ""
+    # Seconds between real-rate fetches in live mode.
+    # Alpha Vantage free (25 calls/day, 8 pairs): 86400/25*8 ≈ 27648s → use 21600 (6h)
+    # Alpha Vantage premium (75 req/min): set to 60
+    live_refresh_interval: int = 21600
 
     # ── Security ──────────────────────────────────────────────────────────────
     api_key: str = ""

@@ -112,11 +112,13 @@ class MarketDataService:
 
     # ── Live data ─────────────────────────────────────────────────────────────
 
-    async def _fetch_live_rates(self) -> None:
+    async def _fetch_live_rates(self) -> int:
+        """Fetch current bid/ask from Alpha Vantage. Returns number of pairs updated."""
         if not settings.alpha_vantage_key:
-            return
-        async with httpx.AsyncClient(timeout=10) as client:
-            for pair in list(PAIR_CONFIG.keys())[:5]:  # free tier limit
+            return 0
+        updated = 0
+        async with httpx.AsyncClient(timeout=15) as client:
+            for pair in list(PAIR_CONFIG.keys()):
                 from_cur, to_cur = pair.split("/")
                 url = (
                     "https://www.alphavantage.co/query"
@@ -129,18 +131,56 @@ class MarketDataService:
                     data = r.json().get("Realtime Currency Exchange Rate", {})
                     bid = float(data.get("8. Bid Price", 0))
                     ask = float(data.get("9. Ask Price", 0))
-                    if bid and ask:
+                    if bid > 0 and ask > 0:
                         bar = PriceBar(datetime.now(timezone.utc), bid, ask)
                         self._prices[pair] = bar
                         self._history[pair].append(bar)
-                except Exception:
-                    pass
-                await asyncio.sleep(1)
+                        updated += 1
+                except Exception as exc:
+                    import logging as _log
+                    _log.getLogger("david.market_data").warning(
+                        "Live rate fetch failed for %s: %s", pair, exc
+                    )
+                # Alpha Vantage: 5 req/min on free tier — wait 13s between calls
+                await asyncio.sleep(13)
+        return updated
 
-    async def _live_loop(self, interval: float = 60.0) -> None:
+    async def _live_loop(self) -> None:
+        """
+        Hybrid live mode: GBM simulation for continuous ticks, real rates
+        fetched periodically to keep price levels accurate.
+
+        Quota-safe schedule (Alpha Vantage free tier: 25 calls/day):
+          8 pairs × 13s gaps = ~104s per refresh cycle
+          refresh_interval = live_refresh_interval setting (default 6h)
+          calls/day = 8 × (86400 / live_refresh_interval) ≤ 25 at 6h
+        """
+        import logging as _log
+        logger = _log.getLogger("david.market_data")
+
+        # Anchor simulation to real prices at startup
+        logger.info("Live mode: fetching initial real rates from Alpha Vantage...")
+        n = await self._fetch_live_rates()
+        logger.info("Live mode: anchored %d pairs to real rates", n)
+
+        last_live_fetch = time.monotonic()
+        refresh_interval = settings.live_refresh_interval
+
         while self._running:
-            await self._fetch_live_rates()
-            await asyncio.sleep(interval)
+            # GBM tick — keeps charts smooth between live fetches
+            for pair in PAIR_CONFIG:
+                bar = self._next_tick(pair)
+                self._prices[pair] = bar
+                self._history[pair].append(bar)
+
+            # Periodic live refresh
+            if time.monotonic() - last_live_fetch >= refresh_interval:
+                logger.info("Live mode: refreshing real rates (interval=%ds)", refresh_interval)
+                n = await self._fetch_live_rates()
+                logger.info("Live mode: refreshed %d pairs", n)
+                last_live_fetch = time.monotonic()
+
+            await asyncio.sleep(5)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -149,6 +189,11 @@ class MarketDataService:
         if settings.market_data_mode == "live" and settings.alpha_vantage_key:
             self._task = asyncio.create_task(self._live_loop())
         else:
+            if settings.market_data_mode == "live" and not settings.alpha_vantage_key:
+                import logging as _log
+                _log.getLogger("david.market_data").warning(
+                    "MARKET_DATA_MODE=live but ALPHA_VANTAGE_KEY not set — falling back to simulation"
+                )
             self._task = asyncio.create_task(self._simulation_loop())
 
     async def stop(self) -> None:
@@ -161,6 +206,10 @@ class MarketDataService:
 
     def get_all_prices(self) -> Dict[str, PriceBar]:
         return dict(self._prices)
+
+    def get_rates(self) -> Dict[str, float]:
+        """Return {pair: mid_price} — convenience helper for model endpoints."""
+        return {pair: bar.mid for pair, bar in self._prices.items()}
 
     def get_history(self, pair: str, n: int = 100) -> List[PriceBar]:
         hist = self._history.get(pair, deque())
