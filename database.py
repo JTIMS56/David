@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ssl
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -9,15 +11,37 @@ from sqlalchemy.orm import DeclarativeBase
 from config import settings
 
 
-def _normalize_db_url(url: str) -> str:
-    # DigitalOcean and Heroku inject postgresql:// — SQLAlchemy async requires postgresql+asyncpg://
+def _normalize_db_url(url: str) -> tuple[str, dict]:
+    """
+    Prepare a DATABASE_URL for SQLAlchemy asyncpg.
+    - Rewrite postgresql:// -> postgresql+asyncpg://
+    - Strip sslmode query param (asyncpg uses an ssl= connect_arg instead)
+    """
+    connect_args: dict = {}
+
     for prefix in ("postgres://", "postgresql://"):
         if url.startswith(prefix):
-            return "postgresql+asyncpg://" + url[len(prefix):]
-    return url
+            url = "postgresql+asyncpg://" + url[len(prefix):]
+            break
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    sslmode = params.pop("sslmode", [None])[0]
+
+    if sslmode and sslmode != "disable":
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        connect_args["ssl"] = ctx
+
+    new_query = urlencode({k: v[0] for k, v in params.items()})
+    url = urlunparse(parsed._replace(query=new_query))
+
+    return url, connect_args
 
 
-engine = create_async_engine(_normalize_db_url(settings.database_url), echo=False)
+_db_url, _connect_args = _normalize_db_url(settings.database_url)
+engine = create_async_engine(_db_url, echo=False, connect_args=_connect_args)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
