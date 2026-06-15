@@ -235,7 +235,7 @@ class OrderService:
 
             pos.status        = "CLOSED"
             pos.close_price   = close_price
-            pos.closed_at     = datetime.now(timezone.utc)
+            pos.closed_at     = datetime.now(timezone.utc).replace(tzinfo=None)
             pos.realised_pnl  = round(pnl, 2)
             pos.unrealised_pnl = 0.0
 
