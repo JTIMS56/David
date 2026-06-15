@@ -12,7 +12,7 @@ from config import settings
 from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
-from services.risk_manager import risk_manager
+import services.risk_manager as _risk_mod
 
 # ── Tool schema definitions (for Claude's tool_use) ──────────────────────────
 
@@ -251,7 +251,7 @@ async def _place_order(inputs: dict) -> dict:
         return {"success": False, "message": f"No price for {pair}"}
 
     entry_price = bar.ask if direction == "BUY" else bar.bid
-    check = await risk_manager.check_new_order(
+    check = await _risk_mod.risk_manager.check_new_order(
         pair, direction, size, entry_price, stop_loss, take_profit
     )
     if not check.allowed:
