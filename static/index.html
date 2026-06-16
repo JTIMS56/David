@@ -171,7 +171,7 @@
         <div class="metric">
           <div class="metric-label">Balance</div>
           <div class="metric-value neu" id="m-balance">—</div>
-          <div class="metric-sub">Paper USD</div>
+          <div class="metric-sub" id="m-balance-label">Paper USD</div>
         </div>
         <div class="metric">
           <div class="metric-label">Equity</div>
@@ -474,14 +474,31 @@ function updateAgentBadge(agent) {
 }
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
+let _tradingMode = 'paper';
+
 async function fetchStatus() {
   try {
     const r = await apiFetch('/api/status');
     const d = await r.json();
     const badge = $('mode-badge');
-    const mode = (d.trading_mode || 'paper').toLowerCase();
-    badge.textContent = mode.toUpperCase();
-    badge.className = 'badge' + (mode === 'oanda' ? ' oanda' : '');
+    _tradingMode = (d.trading_mode || 'paper').toLowerCase();
+    badge.textContent = _tradingMode.toUpperCase();
+    badge.className = 'badge' + (_tradingMode === 'oanda' ? ' oanda' : '');
+    if (_tradingMode === 'oanda') fetchOandaBalance();
+  } catch (_) {}
+}
+
+async function fetchOandaBalance() {
+  try {
+    const r = await apiFetch('/api/oanda/account');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('m-balance').textContent = fmtUSD(d.balance);
+    $('m-equity').textContent = fmtUSD(d.nav);
+    const unreal = d.unrealized_pl || 0;
+    $('m-unrealised').textContent = `Unrealised: ${pnlSign(unreal)}${fmtUSD(unreal)}`;
+    $('m-unrealised').className = 'metric-sub ' + pnlClass(unreal);
+    $('m-balance-label').textContent = `OANDA ${d.environment === 'live' ? 'Live' : 'Practice'} ${d.currency}`;
   } catch (_) {}
 }
 
@@ -630,6 +647,8 @@ updateClock();
   ]);
   // Refresh every 10s
   setInterval(() => { fetchPositions(); fetchTrades(); fetchDecisions(); fetchTotalPnL(); }, 10_000);
+  // Refresh OANDA balance every 15s
+  setInterval(() => { if (_tradingMode === 'oanda') fetchOandaBalance(); }, 15_000);
   // Refresh mode badge every 60s (rarely changes)
   setInterval(fetchStatus, 60_000);
 })();
