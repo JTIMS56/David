@@ -17,3 +17,6 @@ nginx/ssl/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Claude Code internal
+.claude/
