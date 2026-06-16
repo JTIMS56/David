@@ -92,14 +92,18 @@ class MarketDataService:
 
     # ── Tick generation ───────────────────────────────────────────────────────
 
+    TICK_INTERVAL_SECONDS: float = 5.0  # must match asyncio.sleep() in the loop methods
+
     def _next_tick(self, pair: str) -> PriceBar:
         cfg = PAIR_CONFIG[pair]
         current = self._prices[pair].mid
         spread = cfg["spread"]
-        sigma = cfg["daily_vol"] / math.sqrt(252 * 24 * 60)  # per-minute vol
-        drift = 0.0
+        # sigma per tick so that daily variance = (daily_vol × price)²
+        # ticks_per_day = seconds_per_day / tick_interval
+        ticks_per_day = 24 * 3600 / self.TICK_INTERVAL_SECONDS  # 17 280 for 5-second ticks
+        sigma = cfg["daily_vol"] / math.sqrt(ticks_per_day)
         shock = random.gauss(0, sigma)
-        new_mid = current * math.exp(drift + shock)
+        new_mid = current * math.exp(shock)
         return PriceBar(datetime.now(timezone.utc), new_mid - spread / 2, new_mid + spread / 2)
 
     async def _simulation_loop(self, interval: float = 5.0) -> None:
