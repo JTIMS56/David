@@ -151,13 +151,17 @@ async def get_portfolio_history(limit: int = Query(288, ge=10, le=1000)):
 
 
 @router.get("/portfolio/alltime")
-async def get_alltime_stats():
+async def get_alltime_stats(oanda_only: bool = False):
     """Cumulative P&L and trade stats from all closed trades in the DB.
-    Survives restarts — reads directly from the trades table, not in-memory state."""
+    Survives restarts — reads directly from the trades table, not in-memory state.
+    Pass oanda_only=true to restrict to trades executed via OANDA (have oanda_trade_id)."""
     async with AsyncSessionLocal() as db:
-        result = await db.execute(
-            select(Trade).where(Trade.action.in_(["CLOSE", "SL_HIT", "TP_HIT"]))
-        )
+        q = select(Trade).where(Trade.action.in_(["CLOSE", "SL_HIT", "TP_HIT"]))
+        if oanda_only:
+            q = q.join(Position, Trade.position_id == Position.id).where(
+                Position.oanda_trade_id.isnot(None)
+            )
+        result = await db.execute(q)
         trades = result.scalars().all()
 
     if not trades:

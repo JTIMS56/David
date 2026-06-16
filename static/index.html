@@ -587,11 +587,15 @@ async function fetchPortfolioHistory() {
 }
 
 async function fetchTotalPnL() {
-  const r = await apiFetch('/api/portfolio/alltime');
+  const oandaMode = _tradingMode === 'oanda';
+  const url = oandaMode ? '/api/portfolio/alltime?oanda_only=true' : '/api/portfolio/alltime';
+  const r = await apiFetch(url);
   const p = await r.json();
   const pnl = p.total_pnl ?? 0;
   const wr  = p.win_rate_pct ?? 0;
-  $('m-total-pnl').textContent = `All-time: ${pnlSign(pnl)}${fmtUSD(pnl)} (${wr}% W)`;
+  const cnt = p.trade_count ?? 0;
+  const label = oandaMode ? `OANDA (${cnt} trades)` : 'All-time';
+  $('m-total-pnl').textContent = `${label}: ${pnlSign(pnl)}${fmtUSD(pnl)} (${wr}% W)`;
   $('m-total-pnl').className = 'metric-sub ' + pnlClass(pnl);
 }
 
