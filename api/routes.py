@@ -250,6 +250,27 @@ async def run_agent_once():
     }
 
 
+@router.get("/oanda/account")
+async def oanda_account_summary():
+    """Fetch live OANDA account balance and open trade count."""
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA not configured — set OANDA_API_KEY and OANDA_ACCOUNT_ID")
+    from services.oanda_client import oanda_client
+    try:
+        data = await oanda_client.get_account_summary()
+        acc = data.get("account", {})
+        return {
+            "balance": float(acc.get("balance", 0)),
+            "nav": float(acc.get("NAV", 0)),
+            "unrealized_pl": float(acc.get("unrealizedPL", 0)),
+            "open_trade_count": int(acc.get("openTradeCount", 0)),
+            "currency": acc.get("currency", "USD"),
+            "environment": settings.oanda_environment,
+        }
+    except Exception as exc:
+        raise HTTPException(502, f"OANDA API error: {exc}")
+
+
 @router.get("/agent/ping")
 async def agent_ping():
     """Validate Anthropic API key and agent readiness without running a full cycle."""

@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     agent_model: str = "claude-sonnet-4-6"
 
     # ── Trading ───────────────────────────────────────────────────────────────
-    trading_mode: str = "paper"          # "paper" | "live"
+    trading_mode: str = "paper"          # "paper" | "oanda"
     initial_balance: float = 100_000.0
     agent_interval_seconds: int = 300
 
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     pip_value_usd: float = 10.0
 
     # ── Market data ───────────────────────────────────────────────────────────
-    market_data_mode: str = "simulation"  # "simulation" | "live"
+    market_data_mode: str = "simulation"  # "simulation" | "live" | "oanda"
     alpha_vantage_key: str = ""
     # Seconds between real-rate fetches in live mode.
     # Alpha Vantage free (25 calls/day, 8 pairs): 86400/25*8 ≈ 27648s → use 21600 (6h)
@@ -64,6 +64,11 @@ class Settings(BaseSettings):
         "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD",
         "USD/CAD", "EUR/GBP", "NZD/USD", "USD/CHF",
     ]
+
+    # ── OANDA ────────────────────────────────────────────────────────────────
+    oanda_api_key: str = ""
+    oanda_account_id: str = ""
+    oanda_environment: str = "practice"  # "practice" | "live"
 
     # ── Environment ───────────────────────────────────────────────────────────
     environment: str = "development"

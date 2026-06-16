@@ -6,6 +6,7 @@ Provides real-time and historical FX price data.
 Modes:
   simulation – Geometric Brownian Motion with realistic per-pair volatilities
   live       – Alpha Vantage free API (requires ALPHA_VANTAGE_KEY)
+  oanda      – OANDA v20 streaming prices (requires OANDA_API_KEY + OANDA_ACCOUNT_ID)
 """
 
 from __future__ import annotations
@@ -186,17 +187,51 @@ class MarketDataService:
 
             await asyncio.sleep(5)
 
+    # ── OANDA price feed ──────────────────────────────────────────────────────
+
+    async def _oanda_loop(self) -> None:
+        """Poll OANDA pricing API every 5 seconds for real bid/ask prices."""
+        from services.oanda_client import oanda_client, OANDA_TO_PAIR
+        import logging as _log
+        logger = _log.getLogger("david.market_data")
+        logger.info("OANDA market data: starting price feed")
+        while self._running:
+            try:
+                data = await oanda_client.get_prices(list(PAIR_CONFIG.keys()))
+                updated = 0
+                for price_data in data.get("prices", []):
+                    instrument = price_data.get("instrument", "")
+                    pair = OANDA_TO_PAIR.get(instrument)
+                    if not pair or not price_data.get("tradeable", True):
+                        continue
+                    bid = float(price_data["bids"][0]["price"])
+                    ask = float(price_data["asks"][0]["price"])
+                    bar = PriceBar(datetime.now(timezone.utc), bid, ask)
+                    self._prices[pair] = bar
+                    self._history[pair].append(bar)
+                    updated += 1
+                if updated:
+                    logger.debug("OANDA: updated %d pairs", updated)
+            except Exception as exc:
+                logger.warning("OANDA price poll failed: %s", exc)
+            await asyncio.sleep(5)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         self._running = True
-        if settings.market_data_mode == "live" and settings.alpha_vantage_key:
+        if settings.market_data_mode == "oanda" and settings.oanda_api_key:
+            self._task = asyncio.create_task(self._oanda_loop())
+        elif settings.market_data_mode == "live" and settings.alpha_vantage_key:
             self._task = asyncio.create_task(self._live_loop())
         else:
-            if settings.market_data_mode == "live" and not settings.alpha_vantage_key:
+            if settings.market_data_mode in ("live", "oanda") and not (
+                settings.alpha_vantage_key or settings.oanda_api_key
+            ):
                 import logging as _log
                 _log.getLogger("david.market_data").warning(
-                    "MARKET_DATA_MODE=live but ALPHA_VANTAGE_KEY not set — falling back to simulation"
+                    "MARKET_DATA_MODE=%s but no API key set — falling back to simulation",
+                    settings.market_data_mode,
                 )
             self._task = asyncio.create_task(self._simulation_loop())
 

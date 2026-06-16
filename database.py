@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -60,7 +61,28 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+async def _migrate_schema(engine) -> None:
+    """Add columns introduced after initial schema creation."""
+    async with engine.begin() as conn:
+        db_url = str(engine.url)
+        if "sqlite" in db_url:
+            result = await conn.execute(text("PRAGMA table_info(positions)"))
+            cols = [row[1] for row in result.fetchall()]
+            if "oanda_trade_id" not in cols:
+                await conn.execute(
+                    text("ALTER TABLE positions ADD COLUMN oanda_trade_id VARCHAR(20)")
+                )
+        else:
+            # PostgreSQL: IF NOT EXISTS avoids errors on repeated startups
+            await conn.execute(
+                text(
+                    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS oanda_trade_id VARCHAR(20)"
+                )
+            )
+
+
 async def init_db() -> None:
     from models.orm import Position, Trade, PriceTick, AgentDecision, PortfolioSnapshot  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _migrate_schema(engine)

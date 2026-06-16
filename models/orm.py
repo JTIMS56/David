@@ -38,6 +38,7 @@ class Position(Base):
     close_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     realised_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     reasoning: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    oanda_trade_id: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
 
 
 class Trade(Base):

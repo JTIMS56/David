@@ -165,6 +165,47 @@ class OrderService:
             )
             return True, f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f}", None
 
+        # ── OANDA live execution ───────────────────────────────────────────────
+        oanda_trade_id: Optional[str] = None
+        if settings.trading_mode == "oanda" and settings.oanda_api_key:
+            from services.oanda_client import oanda_client, PAIR_TO_OANDA
+            if pair in PAIR_TO_OANDA:
+                try:
+                    units = int(size) if direction == "BUY" else -int(size)
+                    result = await oanda_client.place_market_order(
+                        PAIR_TO_OANDA[pair], units, stop_loss, take_profit
+                    )
+                    fill = result.get("orderFillTransaction", {})
+                    cancel = result.get("orderCancelTransaction", {})
+                    if cancel:
+                        reason = cancel.get("reason", "unknown")
+                        logger.warning("OANDA order cancelled: %s", reason)
+                        await _write_audit(
+                            source=source, event_type="ORDER_REJECT",
+                            pair=pair, direction=direction, size=size,
+                            entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                            gate_allowed=True, gate_reason=f"OANDA cancelled: {reason}",
+                        )
+                        return False, f"OANDA order cancelled: {reason}", None
+                    if fill:
+                        oanda_trade_id = fill.get("tradeOpened", {}).get("tradeID")
+                        fill_price = fill.get("price")
+                        if fill_price:
+                            entry_price = float(fill_price)
+                        logger.info(
+                            "OANDA order filled: trade_id=%s price=%s",
+                            oanda_trade_id, fill_price,
+                        )
+                except Exception as exc:
+                    logger.error("OANDA order execution failed: %s", exc, exc_info=True)
+                    await _write_audit(
+                        source=source, event_type="ORDER_REJECT",
+                        pair=pair, direction=direction, size=size,
+                        entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                        gate_allowed=True, gate_reason=f"OANDA API error: {exc}",
+                    )
+                    return False, f"OANDA execution failed: {exc}", None
+
         # ── Write position + trade atomically ─────────────────────────────────
         async with AsyncSessionLocal() as db:
             pos = Position(
@@ -178,6 +219,7 @@ class OrderService:
                 unrealised_pnl=0.0,
                 status="OPEN",
                 reasoning=reasoning,
+                oanda_trade_id=oanda_trade_id,
             )
             db.add(pos)
             await db.flush()
@@ -235,10 +277,35 @@ class OrderService:
                 return False, f"No price for {pos.pair}", 0.0
 
             close_price = bar.bid if pos.direction == "BUY" else bar.ask
-            if pos.direction == "BUY":
-                pnl = (close_price - pos.entry_price) * pos.size
-            else:
-                pnl = (pos.entry_price - close_price) * pos.size
+            pnl: float = 0.0
+
+            # ── OANDA live close ───────────────────────────────────────────────
+            if settings.trading_mode == "oanda" and settings.oanda_api_key and pos.oanda_trade_id:
+                from services.oanda_client import oanda_client
+                try:
+                    result = await oanda_client.close_trade(pos.oanda_trade_id)
+                    fill = result.get("orderFillTransaction", {})
+                    if fill:
+                        oanda_close_price = fill.get("price")
+                        if oanda_close_price:
+                            close_price = float(oanda_close_price)
+                        oanda_pl = fill.get("pl")
+                        if oanda_pl:
+                            pnl = float(oanda_pl)
+                    logger.info(
+                        "OANDA trade closed: trade_id=%s pnl=%s",
+                        pos.oanda_trade_id, pnl,
+                    )
+                except Exception as exc:
+                    logger.error("OANDA close failed: %s", exc, exc_info=True)
+                    # Continue with paper close if OANDA fails
+
+            # ── Paper PnL calculation (used when no OANDA fill, or OANDA close failed) ─
+            if pnl == 0.0:
+                if pos.direction == "BUY":
+                    pnl = (close_price - pos.entry_price) * pos.size
+                else:
+                    pnl = (pos.entry_price - close_price) * pos.size
 
             pos.status        = "CLOSED"
             pos.close_price   = close_price
