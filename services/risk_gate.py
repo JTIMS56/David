@@ -40,6 +40,7 @@ class RiskGate:
         max_spread_pips: float = 5.0,
         data_stale_seconds: float = 30.0,
         max_drawdown_pct: float = 10.0,   # % of peak equity; 10 = 10%
+        max_stop_pips: float = 50.0,      # hard cap on stop distance per trade
     ) -> None:
         self._kill_switch        = False
         self._kill_switch_reason = ""
@@ -49,6 +50,7 @@ class RiskGate:
         self._max_spread_pips    = max_spread_pips
         self._data_stale_seconds = data_stale_seconds
         self._max_drawdown_pct   = max_drawdown_pct
+        self._max_stop_pips      = max_stop_pips
 
     # ── Kill switch ────────────────────────────────────────────────────────────
 
@@ -119,6 +121,7 @@ class RiskGate:
             "drawdown_triggered":   self._drawdown_triggered,
             "max_drawdown_pct":     self._max_drawdown_pct,
             "max_spread_pips":      self._max_spread_pips,
+            "max_stop_pips":        self._max_stop_pips,
             "data_stale_seconds":   self._data_stale_seconds,
         }
 
@@ -134,6 +137,7 @@ class RiskGate:
         spread_pips: float,
         data_age_seconds: float,
         source: str = "agent",   # "agent" | "human" | "sl_tp"
+        stop_pips: Optional[float] = None,
     ) -> GateDecision:
         """
         Evaluate one order. Returns a GateDecision with allowed=True only when
@@ -164,6 +168,16 @@ class RiskGate:
         checks.append("stop_loss_required")
         if stop_loss is None:
             return GateDecision(False, "Stop-loss is required for every order", checks_run=checks)
+
+        # 4b. Max stop distance — caps per-trade risk even when size is within limits
+        checks.append("max_stop_pips")
+        if stop_pips is not None and stop_pips > self._max_stop_pips:
+            return GateDecision(
+                False,
+                f"Stop distance {stop_pips:.1f} pips exceeds maximum {self._max_stop_pips:.1f} pips — "
+                f"tighten your stop to reduce per-trade risk",
+                checks_run=checks,
+            )
 
         # 5. Data freshness
         checks.append("data_freshness")

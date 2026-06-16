@@ -33,6 +33,11 @@ def _spread_pips(pair: str, bid: float, ask: float) -> float:
     return (ask - bid) / pip
 
 
+def _stop_pips(pair: str, entry_price: float, stop_loss: float) -> float:
+    pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+    return abs(entry_price - stop_loss) / pip
+
+
 def _data_age_seconds(bar) -> float:
     now = datetime.now(timezone.utc)
     ts  = bar.timestamp
@@ -116,6 +121,7 @@ class OrderService:
         entry_price = bar.ask if direction == "BUY" else bar.bid
         spread      = _spread_pips(pair, bar.bid, bar.ask)
         data_age    = _data_age_seconds(bar)
+        s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
 
         # ── Hard gate (mandatory, LLM cannot bypass) ──────────────────────────
         decision = risk_gate.approve_order(
@@ -127,6 +133,7 @@ class OrderService:
             spread_pips=spread,
             data_age_seconds=data_age,
             source=source,
+            stop_pips=s_pips,
         )
 
         if not decision.allowed:

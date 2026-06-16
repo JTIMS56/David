@@ -180,7 +180,7 @@
         <div class="metric">
           <div class="metric-label">Daily P&amp;L</div>
           <div class="metric-value" id="m-daily-pnl">—</div>
-          <div class="metric-sub" id="m-total-pnl">Total: —</div>
+          <div class="metric-sub" id="m-total-pnl">All-time: —</div>
         </div>
         <div class="metric">
           <div class="metric-label">Open Positions</div>
@@ -558,10 +558,12 @@ async function fetchPortfolioHistory() {
 }
 
 async function fetchTotalPnL() {
-  const r = await apiFetch('/api/portfolio');
+  const r = await apiFetch('/api/portfolio/alltime');
   const p = await r.json();
-  $('m-total-pnl').textContent = `Total: ${pnlSign(p.total_pnl)}${fmtUSD(p.total_pnl)}`;
-  $('m-total-pnl').className = 'metric-sub ' + pnlClass(p.total_pnl);
+  const pnl = p.total_pnl ?? 0;
+  const wr  = p.win_rate_pct ?? 0;
+  $('m-total-pnl').textContent = `All-time: ${pnlSign(pnl)}${fmtUSD(pnl)} (${wr}% W)`;
+  $('m-total-pnl').className = 'metric-sub ' + pnlClass(pnl);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────────

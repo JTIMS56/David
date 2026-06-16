@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI):
 
     # Apply config-driven risk limits to the hard gate
     risk_gate._max_drawdown_pct = settings.max_drawdown_pct
+    risk_gate._max_stop_pips    = settings.max_stop_pips
 
     # Wire up order service broadcast
     order_service.set_broadcast(manager.broadcast)

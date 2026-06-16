@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     # ── Risk circuit-breakers ─────────────────────────────────────────────────
     max_drawdown_pct: float = 10.0
+    max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./fx_trading.db"

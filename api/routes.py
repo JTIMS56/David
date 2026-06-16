@@ -150,6 +150,37 @@ async def get_portfolio_history(limit: int = Query(288, ge=10, le=1000)):
     return await portfolio_service.get_snapshot_history(limit)
 
 
+@router.get("/portfolio/alltime")
+async def get_alltime_stats():
+    """Cumulative P&L and trade stats from all closed trades in the DB.
+    Survives restarts — reads directly from the trades table, not in-memory state."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Trade).where(Trade.action.in_(["CLOSE", "SL_HIT", "TP_HIT"]))
+        )
+        trades = result.scalars().all()
+
+    if not trades:
+        return {"total_pnl": 0.0, "trade_count": 0, "win_rate_pct": 0.0}
+
+    wins   = [t for t in trades if t.pnl > 0]
+    losses = [t for t in trades if t.pnl < 0]
+
+    return {
+        "total_pnl":     round(sum(t.pnl for t in trades), 2),
+        "trade_count":   len(trades),
+        "win_count":     len(wins),
+        "loss_count":    len(losses),
+        "win_rate_pct":  round(len(wins) / len(trades) * 100, 1),
+        "avg_win":       round(sum(t.pnl for t in wins)   / len(wins),   2) if wins   else 0.0,
+        "avg_loss":      round(sum(t.pnl for t in losses) / len(losses), 2) if losses else 0.0,
+        "best_trade":    round(max(t.pnl for t in trades), 2),
+        "worst_trade":   round(min(t.pnl for t in trades), 2),
+        "gross_profit":  round(sum(t.pnl for t in wins),   2) if wins   else 0.0,
+        "gross_loss":    round(sum(t.pnl for t in losses), 2) if losses else 0.0,
+    }
+
+
 # ── Positions ─────────────────────────────────────────────────────────────────
 
 @router.get("/positions")
