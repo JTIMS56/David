@@ -111,9 +111,13 @@
     .decision-log { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; }
     .decision-item { background: rgba(255,255,255,0.02); border: 1px solid var(--border);
                      border-radius: 4px; padding: 10px 12px; }
-    .decision-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .decision-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
     .decision-cycle { font-size: 11px; color: var(--accent); font-weight: 600; }
     .decision-time { font-size: 11px; color: var(--muted); }
+    .decision-copy { font-size: 10px; padding: 2px 7px; border-radius: 4px; cursor: pointer;
+                     background: transparent; color: var(--muted); border: 1px solid var(--border);
+                     transition: all 0.15s; white-space: nowrap; }
+    .decision-copy:hover { color: var(--text); border-color: var(--accent); }
     .decision-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
     .action-tag { font-size: 10px; padding: 2px 6px; border-radius: 10px;
                   background: rgba(88,166,255,0.1); color: var(--accent);
@@ -551,15 +555,39 @@ async function fetchTrades() {
   }).join('');
 }
 
+function copyDecision(idx) {
+  const d = _lastDecisions[idx];
+  if (!d) return;
+  let actions = [];
+  try { actions = JSON.parse(d.actions_taken || '[]'); } catch(e) {}
+  const ts = new Date(d.timestamp).toUTCString().slice(0, 25) + ' UTC';
+  const tok = d.input_tokens + d.output_tokens;
+  const lines = [
+    `Cycle #${d.cycle} — ${ts} — ${tok} tokens`,
+    '',
+  ];
+  if (actions.length) {
+    lines.push('Actions:', ...actions.map(a => `  • ${a}`), '');
+  }
+  lines.push(d.reasoning || d.market_summary || 'No reasoning logged');
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = document.querySelector(`[data-copy="${idx}"]`);
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastDecisions = [];
+
 async function fetchDecisions() {
   const r = await apiFetch('/api/agent/decisions?limit=10');
   const data = await r.json();
+  _lastDecisions = data;
   const log = $('decision-log');
   if (!data.length) {
     log.innerHTML = '<div class="empty-state">No decisions yet</div>';
     return;
   }
-  log.innerHTML = data.map(d => {
+  log.innerHTML = data.map((d, idx) => {
     let actions = [];
     try { actions = JSON.parse(d.actions_taken || '[]'); } catch(e) {}
     const actionTags = actions.slice(0, 5).map(a => {
@@ -570,6 +598,7 @@ async function fetchDecisions() {
       <div class="decision-header">
         <span class="decision-cycle">Cycle #${d.cycle}</span>
         <span class="decision-time">${relTime(d.timestamp)} · ${d.input_tokens + d.output_tokens} tok</span>
+        <button class="decision-copy" data-copy="${idx}" onclick="copyDecision(${idx})">Copy</button>
       </div>
       ${actions.length ? `<div class="decision-actions">${actionTags}</div>` : ''}
       <div class="decision-reasoning">${d.reasoning || d.market_summary || 'No reasoning logged'}</div>
