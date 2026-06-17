@@ -104,8 +104,9 @@ class OandaClient:
         Args:
             oanda_instrument: OANDA instrument code, e.g. "EUR_USD"
             units: positive = BUY, negative = SELL (must be non-zero integer)
-            sl_price: optional stop-loss price
-            tp_price: optional take-profit price
+            sl_price: ignored — SL/TP are managed by our internal monitor to
+                      avoid OANDA rejections when price moves between quote and fill
+            tp_price: ignored — see sl_price note above
 
         Returns the raw OANDA response dict which may contain:
           - "orderFillTransaction" (success) with keys: price, tradeOpened, pl
@@ -114,24 +115,15 @@ class OandaClient:
         if not settings.oanda_api_key or not settings.oanda_account_id:
             raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
 
+        # SL/TP are intentionally omitted from the OANDA order — attaching them
+        # causes rejections when price moves between the agent's quote and fill.
+        # Our check_sl_tp monitor closes positions within 3s of hitting SL/TP.
         order_body: dict = {
             "type": "MARKET",
             "instrument": oanda_instrument,
             "units": str(units),
             "timeInForce": "FOK",
         }
-
-        if sl_price is not None:
-            order_body["stopLossOnFill"] = {
-                "price": _fmt_price(sl_price, oanda_instrument),
-                "timeInForce": "GTC",
-            }
-
-        if tp_price is not None:
-            order_body["takeProfitOnFill"] = {
-                "price": _fmt_price(tp_price, oanda_instrument),
-                "timeInForce": "GTC",
-            }
 
         body = {"order": order_body}
         base, headers = self._setup()
