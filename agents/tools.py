@@ -5,6 +5,7 @@ Each tool maps directly to a capability the Claude agent can invoke.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Dict
 
@@ -13,6 +14,7 @@ from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
 import services.risk_manager as _risk_mod
+from services.dirac_predictor import DiracPredictor
 
 # ── Tool schema definitions (for Claude's tool_use) ──────────────────────────
 
@@ -133,6 +135,28 @@ TOOL_DEFINITIONS = [
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "get_price_forecast",
+        "description": (
+            "Run the Dirac-Heston-Jump (DHJ) probabilistic model to forecast price "
+            "direction for a currency pair. Returns expected move in pips, probability "
+            "of price rising above spot, chiral charge (market sentiment proxy), and a "
+            "summary signal (STRONG_BULLISH / MILD_BULLISH / NEUTRAL / MILD_BEARISH / "
+            "STRONG_BEARISH). Use this AFTER get_technical_indicators to confirm or "
+            "challenge a trade signal before placing an order."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pair": {"type": "string", "description": "e.g. 'EUR/USD'"},
+                "horizon_days": {
+                    "type": "number",
+                    "description": "Forecast horizon in days (0.5=12h, 1=1day, 2=2days). Default 1.",
+                },
+            },
+            "required": ["pair"],
+        },
+    },
 ]
 
 # ── Tool implementations ──────────────────────────────────────────────────────
@@ -155,6 +179,8 @@ async def handle_tool_call(name: str, inputs: Dict[str, Any]) -> Any:
         return await _close_position(inputs)
     if name == "scan_all_pairs":
         return await _scan_all_pairs()
+    if name == "get_price_forecast":
+        return await _get_price_forecast(inputs["pair"], inputs.get("horizon_days", 1.0))
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -297,3 +323,72 @@ async def _scan_all_pairs() -> list:
             "atr_pips": ind["atr_pips"],
         })
     return rows
+
+
+async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
+    bar = market_data.get_price(pair)
+    if bar is None:
+        return {"error": f"No price available for {pair}"}
+
+    spot = bar.mid
+    oanda_pair = pair.replace("/", "")
+
+    try:
+        predictor = DiracPredictor.instance()
+    except FileNotFoundError as exc:
+        return {"error": f"DHJ model not available: {exc}"}
+
+    try:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: predictor.predict_dhj(
+                pair=oanda_pair,
+                spot=spot,
+                horizon_days=float(horizon_days),
+                n_paths=200,
+            ),
+        )
+    except Exception as exc:
+        return {"error": f"DHJ prediction failed: {exc}"}
+
+    # Compute P(S_T > spot) by integrating density above current price
+    prices = result.prices
+    probs = result.prob_dhj
+    prob_up = 0.0
+    for i in range(len(prices) - 1):
+        if prices[i] >= spot:
+            prob_up += probs[i] * (prices[i + 1] - prices[i])
+    prob_up = round(min(max(prob_up, 0.0), 1.0), 3)
+
+    pip = market_data.get_pip_size(pair)
+    expected_move_pips = round((result.mean_dhj - spot) / pip, 1)
+
+    q5 = result.chiral_charge
+    if q5 > 0.05 and prob_up > 0.56:
+        signal = "STRONG_BULLISH"
+    elif q5 > 0.02 or prob_up > 0.54:
+        signal = "MILD_BULLISH"
+    elif q5 < -0.05 and prob_up < 0.44:
+        signal = "STRONG_BEARISH"
+    elif q5 < -0.02 or prob_up < 0.46:
+        signal = "MILD_BEARISH"
+    else:
+        signal = "NEUTRAL"
+
+    return {
+        "pair": pair,
+        "spot": round(spot, 6),
+        "horizon_days": horizon_days,
+        "dhj_expected_price": round(result.mean_dhj, 6),
+        "bs_expected_price": round(result.mean_bs, 6),
+        "expected_move_pips": expected_move_pips,
+        "expected_direction": "UP" if result.mean_dhj > spot else "DOWN",
+        "prob_above_spot": prob_up,
+        "chiral_charge": round(q5, 4),
+        "implied_vol_annualized": round(result.avg_variance ** 0.5, 4),
+        "dhj_call_price": round(result.call_dhj, 6),
+        "bs_call_price": round(result.call_bs, 6),
+        "dhj_higher_tail_risk": result.call_dhj > result.call_bs,
+        "signal": signal,
+    }
