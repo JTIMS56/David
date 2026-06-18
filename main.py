@@ -101,6 +101,56 @@ async def broadcast_prices(interval: float = 2.0) -> None:
         await asyncio.sleep(interval)
 
 
+# ── Forecast evaluation task ──────────────────────────────────────────────────
+
+async def evaluate_forecasts(interval: float = 60.0) -> None:
+    """Check past-horizon DHJ forecasts every minute and record outcomes."""
+    from sqlalchemy import and_, select as _select
+    from database import AsyncSessionLocal as _ASL
+    from models.orm import ForecastLog
+    from services.market_data import PAIR_CONFIG
+
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            now = datetime.utcnow()
+            async with _ASL() as db:
+                q = (
+                    _select(ForecastLog)
+                    .where(
+                        and_(
+                            ForecastLog.horizon_at <= now,
+                            ForecastLog.evaluated_at.is_(None),
+                        )
+                    )
+                    .limit(50)
+                )
+                result = await db.execute(q)
+                pending = result.scalars().all()
+                if not pending:
+                    continue
+                evaluated = 0
+                for log in pending:
+                    bar = market_data.get_price(log.pair)
+                    if bar is None:
+                        continue
+                    pip = PAIR_CONFIG.get(log.pair, {}).get("pip", 0.0001)
+                    actual_pips = round((bar.mid - log.spot_price) / pip, 1)
+                    log.outcome_price     = round(bar.mid, 6)
+                    log.actual_move_pips  = actual_pips
+                    log.direction_correct = (
+                        (actual_pips > 0 and log.expected_direction == "UP") or
+                        (actual_pips < 0 and log.expected_direction == "DOWN")
+                    )
+                    log.evaluated_at = now
+                    evaluated += 1
+                if evaluated:
+                    await db.commit()
+                    logger.info(f"Forecast evaluator: marked {evaluated} forecast(s)")
+        except Exception:
+            logger.exception("Error in forecast evaluation loop")
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -134,6 +184,9 @@ async def lifespan(app: FastAPI):
     # Start price broadcast
     broadcast_task = asyncio.create_task(broadcast_prices())
 
+    # Start forecast evaluation (checks DB every 60s for expired forecasts)
+    eval_task = asyncio.create_task(evaluate_forecasts())
+
     # Auto-start agent only when explicitly configured
     if settings.anthropic_api_key:
         await trading_agent.start()
@@ -147,6 +200,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     broadcast_task.cancel()
+    eval_task.cancel()
     await trading_agent.stop()
     await order_service.stop_monitor()
     await market_data.stop()

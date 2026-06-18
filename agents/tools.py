@@ -7,7 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+from datetime import datetime, timedelta
 from typing import Any, Dict
+
+logger = logging.getLogger("david.tools")
 
 from config import settings
 from services.market_data import market_data, PAIR_CONFIG
@@ -376,7 +380,7 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
     else:
         signal = "NEUTRAL"
 
-    return {
+    output = {
         "pair": pair,
         "spot": round(spot, 6),
         "horizon_days": horizon_days,
@@ -392,3 +396,29 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         "dhj_higher_tail_risk": result.call_dhj > result.call_bs,
         "signal": signal,
     }
+
+    asyncio.create_task(_log_forecast_to_db(
+        pair=pair,
+        spot_price=spot,
+        horizon_days=float(horizon_days),
+        signal=signal,
+        expected_direction=output["expected_direction"],
+        expected_move_pips=expected_move_pips,
+        prob_above_spot=prob_up,
+        chiral_charge=round(q5, 4),
+        dhj_expected_price=round(result.mean_dhj, 6),
+    ))
+
+    return output
+
+
+async def _log_forecast_to_db(**kwargs) -> None:
+    try:
+        from database import AsyncSessionLocal
+        from models.orm import ForecastLog
+        horizon_at = datetime.utcnow() + timedelta(days=kwargs["horizon_days"])
+        async with AsyncSessionLocal() as db:
+            db.add(ForecastLog(horizon_at=horizon_at, **kwargs))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to log forecast: %s", exc)

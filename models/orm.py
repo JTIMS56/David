@@ -110,6 +110,30 @@ class ModelRun(Base):
     agent_decision_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
+class ForecastLog(Base):
+    """Every DHJ get_price_forecast call made by the agent, with outcome filled in after horizon."""
+    __tablename__ = "forecast_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    pair: Mapped[str] = mapped_column(String(10), index=True)
+    spot_price: Mapped[float] = mapped_column(Float)
+    horizon_days: Mapped[float] = mapped_column(Float)
+    horizon_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # DHJ signal
+    signal: Mapped[str] = mapped_column(String(20))
+    expected_direction: Mapped[str] = mapped_column(String(4))
+    expected_move_pips: Mapped[float] = mapped_column(Float)
+    prob_above_spot: Mapped[float] = mapped_column(Float)
+    chiral_charge: Mapped[float] = mapped_column(Float)
+    dhj_expected_price: Mapped[float] = mapped_column(Float)
+    # Outcome — filled by background evaluator after horizon_at
+    outcome_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    actual_move_pips: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    direction_correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class AuditLog(Base):
     """Immutable record of every order attempt and gate decision."""
     __tablename__ = "audit_log"

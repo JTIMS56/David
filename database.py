@@ -82,7 +82,7 @@ async def _migrate_schema(engine) -> None:
 
 
 async def init_db() -> None:
-    from models.orm import Position, Trade, PriceTick, AgentDecision, PortfolioSnapshot  # noqa: F401
+    from models.orm import Position, Trade, PriceTick, AgentDecision, PortfolioSnapshot, ForecastLog  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     await _migrate_schema(engine)

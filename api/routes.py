@@ -663,6 +663,60 @@ async def dhj_predict_endpoint(
     }
 
 
+# ── Forecast Accuracy ────────────────────────────────────────────────────────
+
+@router.get("/forecast/accuracy")
+async def forecast_accuracy():
+    """DHJ direction-forecast accuracy: hit rate by signal type, with recent outcomes."""
+    from models.orm import ForecastLog
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(1000)
+        )
+        logs = result.scalars().all()
+
+    evaluated = [l for l in logs if l.evaluated_at is not None]
+    pending   = [l for l in logs if l.evaluated_at is None]
+    correct   = [l for l in evaluated if l.direction_correct]
+
+    by_signal: dict = {}
+    for sig in ["STRONG_BULLISH", "MILD_BULLISH", "NEUTRAL", "MILD_BEARISH", "STRONG_BEARISH"]:
+        sig_all = [l for l in logs      if l.signal == sig]
+        sig_ev  = [l for l in evaluated if l.signal == sig]
+        sig_ok  = [l for l in sig_ev    if l.direction_correct]
+        by_signal[sig] = {
+            "total":     len(sig_all),
+            "evaluated": len(sig_ev),
+            "correct":   len(sig_ok),
+            "accuracy":  round(len(sig_ok) / len(sig_ev), 3) if sig_ev else None,
+        }
+
+    recent = sorted(evaluated, key=lambda l: l.evaluated_at, reverse=True)[:20]
+    return {
+        "total_forecasts":    len(logs),
+        "evaluated":          len(evaluated),
+        "pending":            len(pending),
+        "direction_accuracy": round(len(correct) / len(evaluated), 3) if evaluated else None,
+        "by_signal":          by_signal,
+        "recent": [
+            {
+                "id":                 l.id,
+                "pair":               l.pair,
+                "signal":             l.signal,
+                "expected_direction": l.expected_direction,
+                "expected_move_pips": l.expected_move_pips,
+                "actual_move_pips":   l.actual_move_pips,
+                "direction_correct":  l.direction_correct,
+                "prob_above_spot":    l.prob_above_spot,
+                "created_at":         l.created_at.isoformat(),
+                "evaluated_at":       l.evaluated_at.isoformat() if l.evaluated_at else None,
+                "horizon_days":       l.horizon_days,
+            }
+            for l in recent
+        ],
+    }
+
+
 # ── Model Registry ────────────────────────────────────────────────────────────
 
 @router.get("/registry")
