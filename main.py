@@ -142,6 +142,11 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
                         (actual_pips > 0 and log.expected_direction == "UP") or
                         (actual_pips < 0 and log.expected_direction == "DOWN")
                     )
+                    if log.bs_expected_direction:
+                        log.bs_direction_correct = (
+                            (actual_pips > 0 and log.bs_expected_direction == "UP") or
+                            (actual_pips < 0 and log.bs_expected_direction == "DOWN")
+                        )
                     log.evaluated_at = now
                     evaluated += 1
                 if evaluated:

@@ -75,10 +75,17 @@ async def _migrate_schema(engine) -> None:
         else:
             # PostgreSQL: IF NOT EXISTS avoids errors on repeated startups
             await conn.execute(
-                text(
-                    "ALTER TABLE positions ADD COLUMN IF NOT EXISTS oanda_trade_id VARCHAR(20)"
-                )
+                text("ALTER TABLE positions ADD COLUMN IF NOT EXISTS oanda_trade_id VARCHAR(20)")
             )
+            # forecast_logs: BS comparison columns added after initial schema
+            for _col, _typ in [
+                ("bs_expected_price",     "FLOAT"),
+                ("bs_expected_direction", "VARCHAR(4)"),
+                ("bs_direction_correct",  "BOOLEAN"),
+            ]:
+                await conn.execute(
+                    text(f"ALTER TABLE forecast_logs ADD COLUMN IF NOT EXISTS {_col} {_typ}")
+                )
 
 
 async def init_db() -> None:

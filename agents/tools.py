@@ -407,6 +407,8 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         prob_above_spot=prob_up,
         chiral_charge=round(q5, 4),
         dhj_expected_price=round(result.mean_dhj, 6),
+        bs_expected_price=round(result.mean_bs, 6),
+        bs_expected_direction="UP" if result.mean_bs > spot else "DOWN",
     ))
 
     return output

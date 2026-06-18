@@ -679,6 +679,19 @@ async def forecast_accuracy():
     pending   = [l for l in logs if l.evaluated_at is None]
     correct   = [l for l in evaluated if l.direction_correct]
 
+    # BS accuracy (only rows that have BS data, i.e. logged after the BS columns were added)
+    bs_ev      = [l for l in evaluated if l.bs_direction_correct is not None]
+    bs_correct = [l for l in bs_ev if l.bs_direction_correct]
+    bs_accuracy = round(len(bs_correct) / len(bs_ev), 3) if bs_ev else None
+
+    # Disagreement analysis: rows where DHJ and BS predicted DIFFERENT directions
+    disagreed = [
+        l for l in bs_ev
+        if l.bs_expected_direction and l.bs_expected_direction != l.expected_direction
+    ]
+    dhj_right_bs_wrong = [l for l in disagreed if l.direction_correct and not l.bs_direction_correct]
+    bs_right_dhj_wrong = [l for l in disagreed if l.bs_direction_correct and not l.direction_correct]
+
     by_signal: dict = {}
     for sig in ["STRONG_BULLISH", "MILD_BULLISH", "NEUTRAL", "MILD_BEARISH", "STRONG_BEARISH"]:
         sig_all = [l for l in logs      if l.signal == sig]
@@ -693,24 +706,35 @@ async def forecast_accuracy():
 
     recent = sorted(evaluated, key=lambda l: l.evaluated_at, reverse=True)[:20]
     return {
-        "total_forecasts":    len(logs),
-        "evaluated":          len(evaluated),
-        "pending":            len(pending),
-        "direction_accuracy": round(len(correct) / len(evaluated), 3) if evaluated else None,
-        "by_signal":          by_signal,
+        "total_forecasts":      len(logs),
+        "evaluated":            len(evaluated),
+        "pending":              len(pending),
+        "direction_accuracy":   round(len(correct) / len(evaluated), 3) if evaluated else None,
+        "bs_direction_accuracy": bs_accuracy,
+        "bs_evaluated":         len(bs_ev),
+        "disagreements": {
+            "total":              len(disagreed),
+            "dhj_right_bs_wrong": len(dhj_right_bs_wrong),
+            "bs_right_dhj_wrong": len(bs_right_dhj_wrong),
+            "both_right":         len([l for l in disagreed if l.direction_correct and l.bs_direction_correct]),
+            "both_wrong":         len([l for l in disagreed if not l.direction_correct and not l.bs_direction_correct]),
+        },
+        "by_signal": by_signal,
         "recent": [
             {
-                "id":                 l.id,
-                "pair":               l.pair,
-                "signal":             l.signal,
-                "expected_direction": l.expected_direction,
-                "expected_move_pips": l.expected_move_pips,
-                "actual_move_pips":   l.actual_move_pips,
-                "direction_correct":  l.direction_correct,
-                "prob_above_spot":    l.prob_above_spot,
-                "created_at":         l.created_at.isoformat(),
-                "evaluated_at":       l.evaluated_at.isoformat() if l.evaluated_at else None,
-                "horizon_days":       l.horizon_days,
+                "id":                   l.id,
+                "pair":                 l.pair,
+                "signal":               l.signal,
+                "expected_direction":   l.expected_direction,
+                "expected_move_pips":   l.expected_move_pips,
+                "actual_move_pips":     l.actual_move_pips,
+                "direction_correct":    l.direction_correct,
+                "bs_expected_direction": l.bs_expected_direction,
+                "bs_direction_correct": l.bs_direction_correct,
+                "prob_above_spot":      l.prob_above_spot,
+                "created_at":           l.created_at.isoformat(),
+                "evaluated_at":         l.evaluated_at.isoformat() if l.evaluated_at else None,
+                "horizon_days":         l.horizon_days,
             }
             for l in recent
         ],

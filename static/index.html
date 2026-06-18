@@ -226,10 +226,10 @@
         <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-top:10px">
           <table>
             <thead>
-              <tr><th>Pair</th><th>Signal</th><th>Expected</th><th>Actual</th><th>Result</th><th>P(↑)</th><th>Forecasted</th></tr>
+              <tr><th>Pair</th><th>Signal</th><th>DHJ→</th><th>BS→</th><th>Actual</th><th>DHJ</th><th>BS</th><th>P(↑)</th><th>Forecasted</th></tr>
             </thead>
             <tbody id="forecast-tbody">
-              <tr><td colspan="7" class="empty-state">First results appear 1 day after first forecast</td></tr>
+              <tr><td colspan="9" class="empty-state">First results appear 1 day after first forecast</td></tr>
             </tbody>
           </table>
         </div>
@@ -684,10 +684,19 @@ async function fetchForecastAccuracy() {
     if (!r.ok) return;
     const data = await r.json();
 
-    const accuracy = data.direction_accuracy != null
-      ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
-    const accColor = data.direction_accuracy >= 0.55 ? 'var(--green)'
+    const dhjAcc = data.direction_accuracy != null ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
+    const bsAcc  = data.bs_direction_accuracy != null ? `${(data.bs_direction_accuracy * 100).toFixed(1)}%` : '—';
+    const dhjColor = data.direction_accuracy >= 0.55 ? 'var(--green)'
       : data.direction_accuracy <= 0.45 ? 'var(--red)' : 'var(--text)';
+    const bsColor  = data.bs_direction_accuracy >= 0.55 ? 'var(--green)'
+      : data.bs_direction_accuracy <= 0.45 ? 'var(--red)' : 'var(--text)';
+    const d = data.disagreements || {};
+    const disagreeHtml = d.total > 0
+      ? `<span style="color:var(--muted)">When they disagree (${d.total}): </span>
+         <span style="color:var(--green)">DHJ✓ ${d.dhj_right_bs_wrong}</span> ·
+         <span style="color:var(--red)">BS✓ ${d.bs_right_dhj_wrong}</span> ·
+         <span style="color:var(--muted)">both✓ ${d.both_right} · both✗ ${d.both_wrong}</span>`
+      : `<span style="color:var(--muted)">Disagreement data accumulates after first evaluations</span>`;
     const sigParts = Object.entries(data.by_signal)
       .filter(([, v]) => v.evaluated > 0)
       .map(([sig, v]) => {
@@ -698,30 +707,38 @@ async function fetchForecastAccuracy() {
       }).join(' · ');
 
     $('forecast-summary').innerHTML = `
-      <div style="display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;margin-bottom:4px">
-        <span><b style="font-size:18px;color:${accColor}">${accuracy}</b>
-          <span style="color:var(--muted)"> direction accuracy</span></span>
+      <div style="display:flex;gap:24px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
+        <span><b style="font-size:18px;color:${dhjColor}">${dhjAcc}</b>
+          <span style="color:var(--muted)"> DHJ</span></span>
+        <span><b style="font-size:18px;color:${bsColor}">${bsAcc}</b>
+          <span style="color:var(--muted)"> Black-Scholes</span></span>
         <span style="color:var(--muted);font-size:11px">${data.evaluated} evaluated · ${data.pending} pending</span>
       </div>
+      <div style="font-size:11px;margin-bottom:4px">${disagreeHtml}</div>
       ${sigParts ? `<div style="font-size:11px;color:var(--muted);line-height:1.8">${sigParts}</div>` : ''}`;
 
     const tbody = $('forecast-tbody');
     if (!data.recent.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">First results appear 1 day after first forecast</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">First results appear 1 day after first forecast</td></tr>';
       return;
     }
     tbody.innerHTML = data.recent.map(f => {
-      const rc = f.direction_correct ? 'var(--green)' : 'var(--red)';
-      const sc = f.signal.includes('BULLISH') ? 'var(--green)'
+      const sc   = f.signal.includes('BULLISH') ? 'var(--green)'
         : f.signal.includes('BEARISH') ? 'var(--red)' : 'var(--muted)';
-      const eDir = f.expected_direction === 'UP' ? '↑' : '↓';
+      const dDir = f.expected_direction === 'UP' ? '↑' : '↓';
+      const bDir = f.bs_expected_direction ? (f.bs_expected_direction === 'UP' ? '↑' : '↓') : '—';
       const aDir = f.actual_move_pips > 0 ? '↑' : f.actual_move_pips < 0 ? '↓' : '→';
-      return `<tr>
+      const dhjR = f.direction_correct;
+      const bsR  = f.bs_direction_correct;
+      const conflict = f.bs_expected_direction && f.bs_expected_direction !== f.expected_direction;
+      return `<tr${conflict ? ' style="background:rgba(188,140,255,0.05)"' : ''}>
         <td><strong>${f.pair}</strong></td>
         <td style="color:${sc};font-size:10px">${f.signal.replace('_', ' ')}</td>
-        <td style="font-family:var(--font)">${eDir} ${Math.abs(f.expected_move_pips).toFixed(1)}p</td>
+        <td style="font-family:var(--font);color:${dDir==='↑'?'var(--green)':'var(--red)'}">${dDir}</td>
+        <td style="font-family:var(--font);color:${bDir==='↑'?'var(--green)':bDir==='↓'?'var(--red)':'var(--muted)'}">${bDir}</td>
         <td style="font-family:var(--font)">${aDir} ${Math.abs(f.actual_move_pips || 0).toFixed(1)}p</td>
-        <td style="color:${rc};font-weight:700">${f.direction_correct ? '✓' : '✗'}</td>
+        <td style="color:${dhjR?'var(--green)':'var(--red)'};font-weight:700">${dhjR?'✓':'✗'}</td>
+        <td style="color:${bsR==null?'var(--muted)':bsR?'var(--green)':'var(--red)'};font-weight:700">${bsR==null?'—':bsR?'✓':'✗'}</td>
         <td style="color:var(--muted)">${(f.prob_above_spot * 100).toFixed(1)}%</td>
         <td style="color:var(--muted);font-size:10px">${relTime(f.created_at)}</td>
       </tr>`;

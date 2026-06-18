@@ -127,10 +127,14 @@ class ForecastLog(Base):
     prob_above_spot: Mapped[float] = mapped_column(Float)
     chiral_charge: Mapped[float] = mapped_column(Float)
     dhj_expected_price: Mapped[float] = mapped_column(Float)
+    # Black-Scholes reference — logged alongside DHJ for head-to-head comparison
+    bs_expected_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    bs_expected_direction: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
     # Outcome — filled by background evaluator after horizon_at
     outcome_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     actual_move_pips: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     direction_correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    bs_direction_correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     evaluated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
