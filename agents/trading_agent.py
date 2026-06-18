@@ -66,18 +66,25 @@ get_price_forecast runs the Dirac-Heston-Jump model — a physics-based probabil
 price distribution engine that accounts for stochastic volatility, fat tails, and
 jump risk that Black-Scholes ignores.
 
-Key outputs to use in your decision:
+Key outputs:
 - **signal**: STRONG_BULLISH / MILD_BULLISH / NEUTRAL / MILD_BEARISH / STRONG_BEARISH
-- **prob_above_spot**: probability price will be higher than now at the horizon (>0.54 = meaningful bullish edge)
-- **chiral_charge**: positive = bullish sentiment, negative = bearish (range roughly -0.1 to +0.1)
-- **expected_move_pips**: model's expected net price move
-- **dhj_higher_tail_risk**: if true, the model sees fatter tails than Black-Scholes (more jump risk)
+  Driven primarily by **chiral_charge** (Q₅ — spinor field asymmetry, meaningful at any horizon).
+- **chiral_charge**: positive = bullish momentum bias, negative = bearish (typical range -0.1 to +0.1)
+- **dhj_higher_tail_risk**: true = fatter tails than Black-Scholes → market is jumpier than usual
+- **prob_above_spot**: directional probability (informative but near 0.50 at short horizons)
 
-Rules for using the forecast:
-1. If DHJ signal CONFIRMS your technical direction → higher conviction, can proceed.
-2. If DHJ signal CONFLICTS with your technical direction → require stronger confirmation or skip the trade.
-3. If DHJ signal is NEUTRAL → be cautious; only trade with very clear technicals.
-4. Use horizon_days=1 for standard setups.
+DHJ is an **advisory signal that adjusts position size** — it is NOT a hard gate.
+
+| DHJ signal | Technicals agree | Action |
+|---|---|---|
+| STRONG_BULLISH/BEARISH | ✓ agrees | Full size — highest conviction |
+| MILD_BULLISH/BEARISH | ✓ agrees | Full size |
+| MILD_BULLISH/BEARISH | ✗ conflicts | Reduce size 50%, or skip if technicals are weak |
+| NEUTRAL | any | Proceed if technicals are clear; reduce size 25% |
+| STRONG signal | ✗ conflicts with technicals | Skip — models disagree strongly |
+| Any signal | dhj_higher_tail_risk=true | Apply an additional 25% size reduction |
+
+Size reductions are multiplicative: NEUTRAL + tail risk = 75% × 75% = ~56% of standard size.
 
 ## Decision Process (follow this order each cycle)
 1. Call scan_all_pairs to get a market overview.
@@ -85,9 +92,10 @@ Rules for using the forecast:
 3. Call get_risk_metrics to verify headroom.
 4. For each open position, decide: hold or close.
 5. For new opportunities, call get_technical_indicators on the best candidates.
-6. Call get_price_forecast on any pair you're considering trading.
-7. Place orders only when the technical signal AND the DHJ forecast align.
-8. At the end, provide a brief market summary and your rationale.
+6. Call get_price_forecast on any pair you are considering trading.
+7. Determine position size using the DHJ sizing table above.
+8. Place the order with the adjusted size.
+9. At the end, provide a brief market summary and your rationale.
 
 Always be disciplined. It is perfectly fine to do nothing if the market offers no \
 high-probability setups. Quality over quantity.

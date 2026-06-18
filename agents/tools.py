@@ -369,13 +369,15 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
     expected_move_pips = round((result.mean_dhj - spot) / pip, 1)
 
     q5 = result.chiral_charge
-    if q5 > 0.05 and prob_up > 0.56:
+    # Q₅ (chiral charge) is the primary signal — it reflects spinor field asymmetry
+    # and is meaningful at any horizon. prob_above_spot only confirms strong signals.
+    if q5 > 0.04 and prob_up > 0.52:
         signal = "STRONG_BULLISH"
-    elif q5 > 0.02 or prob_up > 0.54:
+    elif q5 > 0.015:
         signal = "MILD_BULLISH"
-    elif q5 < -0.05 and prob_up < 0.44:
+    elif q5 < -0.04 and prob_up < 0.48:
         signal = "STRONG_BEARISH"
-    elif q5 < -0.02 or prob_up < 0.46:
+    elif q5 < -0.015:
         signal = "MILD_BEARISH"
     else:
         signal = "NEUTRAL"
