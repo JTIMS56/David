@@ -40,6 +40,7 @@ class RiskGate:
         max_spread_pips: float = 5.0,
         data_stale_seconds: float = 30.0,
         max_drawdown_pct: float = 10.0,   # % of peak equity; 10 = 10%
+        min_stop_pips: float = 15.0,      # minimum stop distance (pips)
         max_stop_pips: float = 50.0,      # hard cap on stop distance per trade
     ) -> None:
         self._kill_switch        = False
@@ -50,6 +51,7 @@ class RiskGate:
         self._max_spread_pips    = max_spread_pips
         self._data_stale_seconds = data_stale_seconds
         self._max_drawdown_pct   = max_drawdown_pct
+        self._min_stop_pips      = min_stop_pips
         self._max_stop_pips      = max_stop_pips
 
     # ── Kill switch ────────────────────────────────────────────────────────────
@@ -121,6 +123,7 @@ class RiskGate:
             "drawdown_triggered":   self._drawdown_triggered,
             "max_drawdown_pct":     self._max_drawdown_pct,
             "max_spread_pips":      self._max_spread_pips,
+            "min_stop_pips":        self._min_stop_pips,
             "max_stop_pips":        self._max_stop_pips,
             "data_stale_seconds":   self._data_stale_seconds,
         }
@@ -138,6 +141,7 @@ class RiskGate:
         data_age_seconds: float,
         source: str = "agent",   # "agent" | "human" | "sl_tp"
         stop_pips: Optional[float] = None,
+        take_profit: Optional[float] = None,
     ) -> GateDecision:
         """
         Evaluate one order. Returns a GateDecision with allowed=True only when
@@ -169,15 +173,54 @@ class RiskGate:
         if stop_loss is None:
             return GateDecision(False, "Stop-loss is required for every order", checks_run=checks)
 
-        # 4b. Max stop distance — caps per-trade risk even when size is within limits
-        checks.append("max_stop_pips")
-        if stop_pips is not None and stop_pips > self._max_stop_pips:
+        # 4b. SL direction validation — SL must be on the losing side of entry
+        checks.append("sl_direction")
+        if direction == "BUY" and stop_loss >= entry_price:
             return GateDecision(
                 False,
-                f"Stop distance {stop_pips:.1f} pips exceeds maximum {self._max_stop_pips:.1f} pips — "
-                f"tighten your stop to reduce per-trade risk",
+                f"BUY order: stop_loss {stop_loss:.5f} must be BELOW entry {entry_price:.5f}",
                 checks_run=checks,
             )
+        if direction == "SELL" and stop_loss <= entry_price:
+            return GateDecision(
+                False,
+                f"SELL order: stop_loss {stop_loss:.5f} must be ABOVE entry {entry_price:.5f}",
+                checks_run=checks,
+            )
+
+        # 4c. TP direction validation — TP must be on the winning side of entry
+        checks.append("tp_direction")
+        if take_profit is not None:
+            if direction == "BUY" and take_profit <= entry_price:
+                return GateDecision(
+                    False,
+                    f"BUY order: take_profit {take_profit:.5f} must be ABOVE entry {entry_price:.5f}",
+                    checks_run=checks,
+                )
+            if direction == "SELL" and take_profit >= entry_price:
+                return GateDecision(
+                    False,
+                    f"SELL order: take_profit {take_profit:.5f} must be BELOW entry {entry_price:.5f}",
+                    checks_run=checks,
+                )
+
+        # 4d. Stop distance bounds — enforce minimum AND maximum
+        checks.append("stop_distance")
+        if stop_pips is not None:
+            if stop_pips < self._min_stop_pips:
+                return GateDecision(
+                    False,
+                    f"Stop distance {stop_pips:.1f} pips is below minimum {self._min_stop_pips:.1f} pips — "
+                    f"widen stop to reduce risk of noise-triggered exits",
+                    checks_run=checks,
+                )
+            if stop_pips > self._max_stop_pips:
+                return GateDecision(
+                    False,
+                    f"Stop distance {stop_pips:.1f} pips exceeds maximum {self._max_stop_pips:.1f} pips — "
+                    f"tighten your stop to reduce per-trade risk",
+                    checks_run=checks,
+                )
 
         # 5. Data freshness
         checks.append("data_freshness")

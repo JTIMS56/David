@@ -75,8 +75,40 @@ class RiskManager:
         if stop_loss is None:
             return RiskCheckResult(False, "Stop-loss is required for all orders.")
 
-        # 6. Minimum R:R check
-        if take_profit is not None and stop_loss is not None:
+        # 6. SL must be on the correct side of entry
+        if direction == "BUY" and stop_loss >= entry_price:
+            return RiskCheckResult(
+                False,
+                f"BUY stop_loss {stop_loss:.5f} must be below entry {entry_price:.5f}.",
+            )
+        if direction == "SELL" and stop_loss <= entry_price:
+            return RiskCheckResult(
+                False,
+                f"SELL stop_loss {stop_loss:.5f} must be above entry {entry_price:.5f}.",
+            )
+
+        # 7. Minimum stop distance
+        from services.market_data import market_data
+        pip = market_data.get_pip_size(pair)
+        stop_pips = abs(entry_price - stop_loss) / pip
+        if stop_pips < settings.min_stop_pips:
+            return RiskCheckResult(
+                False,
+                f"Stop distance {stop_pips:.1f} pips below minimum {settings.min_stop_pips:.0f} pips.",
+            )
+
+        # 8. TP direction + minimum R:R check (using signed distances)
+        if take_profit is not None:
+            if direction == "BUY" and take_profit <= entry_price:
+                return RiskCheckResult(
+                    False,
+                    f"BUY take_profit {take_profit:.5f} must be above entry {entry_price:.5f}.",
+                )
+            if direction == "SELL" and take_profit >= entry_price:
+                return RiskCheckResult(
+                    False,
+                    f"SELL take_profit {take_profit:.5f} must be below entry {entry_price:.5f}.",
+                )
             risk = abs(entry_price - stop_loss)
             reward = abs(take_profit - entry_price)
             if risk > 0 and (reward / risk) < settings.default_risk_reward:

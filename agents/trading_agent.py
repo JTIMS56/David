@@ -55,11 +55,23 @@ You have access to the following tools:
 
 ## Risk Rules (NON-NEGOTIABLE)
 - Always include stop_loss when placing an order — never trade without one.
-- Minimum stop distance: 15 pips.
+- Minimum stop distance: 15 pips. Maximum stop distance: 50 pips.
 - Minimum Risk:Reward ratio: 1.5 (TP must be at least 1.5× the stop distance).
 - Maximum position size: 5% of balance in notional terms.
 - Maximum concurrent open positions: {max_positions}.
 - Do NOT trade if daily loss already exceeds {max_daily_loss_pct}% of balance.
+
+## CRITICAL: Stop-Loss and Take-Profit Placement
+SL and TP must always be on opposite sides of the entry price:
+
+  BUY  @ 1.34000 → stop_loss = 1.33750 (BELOW entry, -25 pips)
+                  → take_profit = 1.34375 (ABOVE entry, +37.5 pips = 1.5× RR)
+
+  SELL @ 1.34000 → stop_loss = 1.34250 (ABOVE entry, +25 pips)
+                  → take_profit = 1.33625 (BELOW entry, -37.5 pips = 1.5× RR)
+
+A BUY with stop_loss ABOVE entry, or TP BELOW entry, will be rejected by the risk gate.
+A SELL with stop_loss BELOW entry, or TP ABOVE entry, will be rejected by the risk gate.
 
 ## DHJ Price Forecast
 get_price_forecast runs the Dirac-Heston-Jump model — a physics-based probabilistic
@@ -307,15 +319,17 @@ class TradingAgent:
 
             price = bar.ask if direction == "BUY" else bar.bid
             pip = market_data.get_pip_size(pair)
-            sl_distance = ind["atr_pips"] * 1.5 * pip
+            # Enforce minimum 15-pip stop regardless of ATR
+            sl_pips = max(ind["atr_pips"] * 1.5, settings.min_stop_pips)
+            sl_distance = sl_pips * pip
             tp_distance = sl_distance * settings.default_risk_reward
 
-            stop_loss = price - sl_distance if direction == "BUY" else price + sl_distance
-            take_profit = price + tp_distance if direction == "BUY" else price - tp_distance
+            stop_loss = round(price - sl_distance if direction == "BUY" else price + sl_distance, 6)
+            take_profit = round(price + tp_distance if direction == "BUY" else price - tp_distance, 6)
 
-            # Size: 1% balance risk
+            # Size: risk 1% of balance per trade (units = risk_amount / price_risk_per_unit)
             risk_amount = state["balance"] * 0.01
-            size = round(risk_amount / sl_distance, 0) if sl_distance > 0 else 1000
+            size = round(risk_amount / sl_distance) if sl_distance > 0 else 1000
 
             check = await risk_manager.check_new_order(
                 pair, direction, size, price, stop_loss, take_profit
@@ -327,8 +341,8 @@ class TradingAgent:
                 pair=pair,
                 direction=direction,
                 size=size,
-                stop_loss=round(stop_loss, 6),
-                take_profit=round(take_profit, 6),
+                stop_loss=stop_loss,
+                take_profit=take_profit,
                 reasoning=f"Demo signal: {signal_reason}",
             )
             if ok and pos:

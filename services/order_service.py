@@ -134,6 +134,7 @@ class OrderService:
             data_age_seconds=data_age,
             source=source,
             stop_pips=s_pips,
+            take_profit=take_profit,
         )
 
         if not decision.allowed:

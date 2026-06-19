@@ -54,6 +54,7 @@ class Settings(BaseSettings):
 
     # ── Risk circuit-breakers ─────────────────────────────────────────────────
     max_drawdown_pct: float = 10.0
+    min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
     # ── Database ──────────────────────────────────────────────────────────────
