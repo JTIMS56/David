@@ -255,7 +255,10 @@
 
         <!-- Trade history -->
         <div class="card">
-          <div class="card-title">Trade History</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div class="card-title" style="margin-bottom:0">Trade History</div>
+            <button class="decision-copy" id="btn-copy-trades" onclick="copyTradeHistory()">Copy</button>
+          </div>
           <div class="table-wrap" style="max-height:360px;overflow-y:auto">
             <table>
               <thead>
@@ -551,9 +554,40 @@ async function fetchPositions() {
   }).join('');
 }
 
+let _lastTrades = [];
+
+function copyTradeHistory() {
+  if (!_lastTrades.length) return;
+  const lines = [
+    `Trade History — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    '',
+    'PAIR       ACTION     DIR   SIZE          PRICE         PnL        TIME',
+    '─'.repeat(74),
+  ];
+  _lastTrades.forEach(t => {
+    const isJPY = t.pair.includes('JPY');
+    const price = t.price.toFixed(isJPY ? 3 : 5);
+    const pnl   = t.pnl !== 0 ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '—';
+    const ago   = (() => {
+      const d = (Date.now() - new Date(t.timestamp)) / 1000;
+      if (d < 60) return `${d|0}s ago`;
+      if (d < 3600) return `${(d/60)|0}m ago`;
+      return `${(d/3600)|0}h ago`;
+    })();
+    lines.push(
+      `${t.pair.padEnd(10)} ${t.action.padEnd(10)} ${t.direction.padEnd(5)} ${String(t.size.toLocaleString()).padEnd(13)} ${price.padEnd(13)} ${pnl.padEnd(10)} ${ago}`
+    );
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-trades');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
 async function fetchTrades() {
   const r = await apiFetch('/api/trades?limit=30');
   const data = await r.json();
+  _lastTrades = data;
   const tbody = $('trades-tbody');
   if (!data.length) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No trades yet</td></tr>';
