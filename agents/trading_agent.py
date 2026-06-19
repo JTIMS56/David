@@ -135,6 +135,7 @@ class TradingAgent:
     def __init__(self) -> None:
         self._client: Optional[anthropic.AsyncAnthropic] = None
         self._running: bool = False
+        self._cycle_running: bool = False
         self._cycle: int = 0
         self._last_run: Optional[datetime] = None
         self._next_run: Optional[datetime] = None
@@ -153,6 +154,17 @@ class TradingAgent:
 
     async def run_once(self) -> Dict[str, Any]:
         """Execute a single trading cycle."""
+        if self._cycle_running:
+            logger.warning("Cycle already running — skipping concurrent request")
+            return {"cycle": self._cycle, "skipped": True, "reason": "Another cycle is already running"}
+
+        self._cycle_running = True
+        try:
+            return await self._run_once_inner()
+        finally:
+            self._cycle_running = False
+
+    async def _run_once_inner(self) -> Dict[str, Any]:
         self._cycle += 1
         self._last_run = datetime.now(timezone.utc)
         logger.info(f"Agent cycle {self._cycle} started")
@@ -436,6 +448,7 @@ class TradingAgent:
     def get_status(self) -> dict:
         return {
             "running": self._running,
+            "cycle_running": self._cycle_running,
             "cycle": self._cycle,
             "last_run": self._last_run.isoformat() if self._last_run else None,
             "next_run": self._next_run.isoformat() if self._next_run else None,
