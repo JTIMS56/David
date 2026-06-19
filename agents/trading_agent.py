@@ -87,6 +87,40 @@ SL and TP must always be on opposite sides of the entry price:
 A BUY with stop_loss ABOVE entry, or TP BELOW entry, will be rejected by the risk gate.
 A SELL with stop_loss BELOW entry, or TP ABOVE entry, will be rejected by the risk gate.
 
+## Stop-Distance Computation (apply EXACTLY in this order every time)
+1. Get atr_pips from get_technical_indicators output.
+2. raw_stop_pips = atr_pips × 1.5
+3. stop_pips = max(raw_stop_pips, 20)   ← ALWAYS floor to 20 (well above the 15-pip minimum)
+4. If stop_pips > 50: skip the pair — too volatile for our limits. Do NOT try to force a trade.
+5. pip_size: 0.0001 for most pairs; 0.01 for any pair containing JPY.
+6. stop_distance = stop_pips × pip_size
+7. Use the CURRENT ask/bid from get_fx_rates (call it immediately before placing):
+     BUY:  entry = ask
+           stop_loss   = round(ask - stop_distance, 5)
+           take_profit = round(ask + stop_distance × 1.5, 5)
+     SELL: entry = bid
+           stop_loss   = round(bid + stop_distance, 5)
+           take_profit = round(bid - stop_distance × 1.5, 5)
+
+Example (EUR/GBP BUY, ask=0.8672, ATR=4 pips):
+  raw_stop_pips = 4 × 1.5 = 6 → floor to 20
+  stop_distance = 20 × 0.0001 = 0.0020
+  stop_loss   = 0.8672 - 0.0020 = 0.8652
+  take_profit = 0.8672 + 0.0030 = 0.8702  (20 × 1.5 = 30 pips)
+
+## Order Rejection Protocol
+If place_order returns success=false, read the message field EXACTLY:
+- "below minimum 15 pips" → your stop is too tight; recompute using max(ATR×1.5, 20) pips
+- "exceeds maximum 50 pips" → your stop is too wide; skip this pair (don't force it to 50 pips)
+- "take_profit must be ABOVE entry" → TP/SL are swapped for BUY; reverse them
+- "take_profit must be BELOW entry" → TP/SL are swapped for SELL; reverse them
+- "stop_loss must be BELOW entry" → SL is on wrong side for BUY; place it below ask
+- "stop_loss must be ABOVE entry" → SL is on wrong side for SELL; place it above bid
+
+Make ONE corrected attempt using the exact fix described. If still rejected, SKIP this pair \
+entirely. Do NOT try a third time or vary parameters at random — move on to the next pair. \
+Exhausting your tool budget on retries is worse than missing a trade.
+
 ## DHJ Price Forecast
 get_price_forecast runs the Dirac-Heston-Jump model — a physics-based probabilistic
 price distribution engine that accounts for stochastic volatility, fat tails, and

@@ -281,11 +281,25 @@ async def _place_order(inputs: dict) -> dict:
         return {"success": False, "message": f"No price for {pair}"}
 
     entry_price = bar.ask if direction == "BUY" else bar.bid
+    pip = market_data.get_pip_size(pair)
+    current_stop_pips = round(abs(entry_price - stop_loss) / pip, 1) if stop_loss is not None else None
+
     check = await _risk_mod.risk_manager.check_new_order(
         pair, direction, size, entry_price, stop_loss, take_profit
     )
     if not check.allowed:
-        return {"success": False, "message": f"Risk check failed: {check.reason}"}
+        hint = (
+            f"Current entry={entry_price:.5f}, stop_loss={stop_loss}, "
+            f"stop_pips={current_stop_pips}. "
+            "Use stop_pips = max(atr_pips × 1.5, 20), compute stop_distance = stop_pips × pip_size, "
+            f"then BUY: SL=entry-stop_distance, TP=entry+stop_distance×1.5. "
+            "If still failing after ONE retry, skip this pair."
+        )
+        return {
+            "success": False,
+            "message": f"Risk check failed: {check.reason}",
+            "how_to_fix": hint,
+        }
 
     ok, msg, pos = await order_service.open_position(
         pair=pair,
