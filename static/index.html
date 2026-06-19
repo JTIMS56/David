@@ -497,8 +497,10 @@ function updateMetrics(p) {
 
 function updateAgentBadge(agent) {
   const el = $('m-agent-status');
-  el.textContent = `Agent: ${agent.running ? '● Running' : '○ Stopped'} (cycle ${agent.cycle})`;
-  el.className = 'metric-sub ' + (agent.running ? 'pos' : 'neu');
+  let statusText = agent.running ? '● Running' : '○ Stopped';
+  if (agent.running && agent.market_open === false) statusText = '⏸ Market closed';
+  el.textContent = `Agent: ${statusText} (cycle ${agent.cycle})`;
+  el.className = 'metric-sub ' + (agent.running && agent.market_open !== false ? 'pos' : 'neu');
   $('agent-mode-badge').textContent = agent.mode === 'ai' ? 'AI' : 'DEMO';
 }
 

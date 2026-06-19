@@ -426,14 +426,36 @@ class TradingAgent:
         self._total_decisions += 1
         return {"cycle": self._cycle, "actions": actions, "reasoning": reasoning}
 
+    # ── Market hours ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_market_open() -> bool:
+        """
+        FX market is open Sunday 22:00 UTC through Friday 21:00 UTC.
+        Saturday is always closed; the Friday-to-Sunday gap is ~49 hours.
+        """
+        now = datetime.now(timezone.utc)
+        wd = now.weekday()   # Mon=0 … Sun=6
+        h  = now.hour
+        if wd == 5:                    # Saturday — always closed
+            return False
+        if wd == 4 and h >= 21:        # Friday from 21:00 UTC
+            return False
+        if wd == 6 and h < 22:         # Sunday until 22:00 UTC
+            return False
+        return True
+
     # ── Scheduler ─────────────────────────────────────────────────────────────
 
     async def _scheduler_loop(self) -> None:
         while self._running:
-            try:
-                await self.run_once()
-            except Exception:
-                logger.exception("Unhandled error in scheduler — cycle skipped")
+            if self._is_market_open():
+                try:
+                    await self.run_once()
+                except Exception:
+                    logger.exception("Unhandled error in scheduler — cycle skipped")
+            else:
+                logger.info("FX market closed (weekend) — scheduler idle")
             self._next_run = datetime.fromtimestamp(
                 datetime.now(timezone.utc).timestamp() + settings.agent_interval_seconds,
                 tz=timezone.utc,
@@ -483,6 +505,7 @@ class TradingAgent:
         return {
             "running": self._running,
             "cycle_running": self._cycle_running,
+            "market_open": self._is_market_open(),
             "cycle": self._cycle,
             "last_run": self._last_run.isoformat() if self._last_run else None,
             "next_run": self._next_run.isoformat() if self._next_run else None,

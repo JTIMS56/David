@@ -91,6 +91,8 @@ class RatesOut(BaseModel):
 
 class AgentStatusOut(BaseModel):
     running: bool
+    cycle_running: bool = False
+    market_open: bool = True
     cycle: int
     last_run: Optional[datetime]
     next_run: Optional[datetime]
