@@ -296,7 +296,10 @@ const fmtUSD = n => '$' + fmt(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 const pnlClass = n => n > 0 ? 'pos' : n < 0 ? 'neg' : 'neu';
 const pnlSign = n => n > 0 ? '+' : '';
 const relTime = ts => {
-  const d = (Date.now() - new Date(ts)) / 1000;
+  // Treat bare ISO strings (no Z / offset) as UTC to prevent local-time shift
+  const utc = /Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : ts + 'Z';
+  const d = (Date.now() - new Date(utc)) / 1000;
+  if (d < 2) return 'just now';
   if (d < 60) return `${d|0}s ago`;
   if (d < 3600) return `${(d/60)|0}m ago`;
   return `${(d/3600)|0}h ago`;

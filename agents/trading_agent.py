@@ -39,7 +39,7 @@ You have access to the following tools:
 - get_portfolio_status     → Account balance, equity, open positions, P&L
 - get_risk_metrics         → Exposure, daily loss, position limits
 - get_price_forecast       → DHJ probabilistic price forecast (direction, prob_up, signal)
-- place_order              → Open a new BUY or SELL position
+- place_order              → Open a new BUY or SELL position (size in base-currency UNITS, not lots)
 - close_position           → Close an existing position
 
 ## Trading Philosophy
@@ -60,6 +60,20 @@ You have access to the following tools:
 - Maximum position size: 5% of balance in notional terms.
 - Maximum concurrent open positions: {max_positions}.
 - Do NOT trade if daily loss already exceeds {max_daily_loss_pct}% of balance.
+
+## Position Sizing (IMPORTANT — size is in base-currency UNITS, not lots)
+All sizes must be whole numbers of base-currency units. Reference values at a $100,000 balance:
+  - EUR/USD @ 1.15:  max_position_notional = $5,000 → max ≈ 4,350 units
+  - GBP/USD @ 1.32:  max ≈ 3,788 units
+  - USD/JPY @ 161:   max ≈ 31 units  (JPY is quote, so notional = size × entry)
+  - USD/CAD @ 1.41:  max ≈ 3,546 units
+
+Correct sizing workflow:
+  1. Get max_position_notional from get_risk_metrics (= 5% of balance).
+  2. Divide by entry price to get max_units: size = int(max_position_notional / entry_price).
+  3. Apply DHJ size reduction if applicable.
+  4. Round to nearest whole number.
+  5. Never pass fractional units (e.g., 3.7) — that is a lot, not units.
 
 ## CRITICAL: Stop-Loss and Take-Profit Placement
 SL and TP must always be on opposite sides of the entry price:

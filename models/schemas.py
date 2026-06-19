@@ -6,6 +6,11 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+def _utc(v: datetime) -> str:
+    """Serialize a naive UTC datetime to an ISO-8601 string with explicit Z suffix."""
+    return v.isoformat() + "Z"
+
+
 class PriceTickOut(BaseModel):
     pair: str
     timestamp: datetime
@@ -33,6 +38,7 @@ class PositionOut(BaseModel):
 
     class Config:
         from_attributes = True
+        json_encoders = {datetime: _utc}
 
 
 class TradeOut(BaseModel):
@@ -49,6 +55,7 @@ class TradeOut(BaseModel):
 
     class Config:
         from_attributes = True
+        json_encoders = {datetime: _utc}
 
 
 class AgentDecisionOut(BaseModel):
@@ -63,6 +70,7 @@ class AgentDecisionOut(BaseModel):
 
     class Config:
         from_attributes = True
+        json_encoders = {datetime: _utc}
 
 
 class PortfolioOut(BaseModel):

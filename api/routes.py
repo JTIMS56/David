@@ -68,9 +68,9 @@ async def get_rates():
             "ask": bar.ask,
             "mid": bar.mid,
             "spread_pips": round((bar.ask - bar.bid) / pip, 1),
-            "timestamp": bar.timestamp.isoformat(),
+            "timestamp": bar.timestamp.isoformat() + "Z",
         }
-    return {"rates": rates, "timestamp": datetime.utcnow().isoformat()}
+    return {"rates": rates, "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 
 @router.get("/rates/{pair:path}")
@@ -106,7 +106,7 @@ async def get_history(pair: str, periods: int = Query(100, ge=10, le=500)):
     return {
         "pair": pair,
         "count": len(bars),
-        "data": [{"timestamp": b.timestamp.isoformat(), "bid": b.bid, "ask": b.ask, "mid": b.mid}
+        "data": [{"timestamp": b.timestamp.isoformat() + "Z", "bid": b.bid, "ask": b.ask, "mid": b.mid}
                  for b in bars],
     }
 
@@ -128,7 +128,7 @@ async def get_portfolio():
             "take_profit": p.take_profit,
             "unrealised_pnl": p.unrealised_pnl,
             "status": p.status,
-            "opened_at": p.opened_at.isoformat(),
+            "opened_at": p.opened_at.isoformat() + "Z",
             "reasoning": p.reasoning,
         }
         for p in state["positions"]
@@ -732,8 +732,8 @@ async def forecast_accuracy():
                 "bs_expected_direction": l.bs_expected_direction,
                 "bs_direction_correct": l.bs_direction_correct,
                 "prob_above_spot":      l.prob_above_spot,
-                "created_at":           l.created_at.isoformat(),
-                "evaluated_at":         l.evaluated_at.isoformat() if l.evaluated_at else None,
+                "created_at":           l.created_at.isoformat() + "Z",
+                "evaluated_at":         l.evaluated_at.isoformat() + "Z" if l.evaluated_at else None,
                 "horizon_days":         l.horizon_days,
             }
             for l in recent
