@@ -221,7 +221,10 @@
 
       <!-- DHJ Forecast Accuracy -->
       <div class="card">
-        <div class="card-title">DHJ Model Accuracy</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">DHJ Model Accuracy</div>
+          <button class="decision-copy" id="btn-copy-forecast" onclick="copyForecastAccuracy()">Copy</button>
+        </div>
         <div id="forecast-summary" style="font-size:12px;color:var(--muted)">Awaiting evaluated forecasts…</div>
         <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-top:10px">
           <table>
@@ -678,11 +681,60 @@ $('btn-stop-agent').onclick = async () => {
 };
 
 // ── DHJ Forecast Accuracy ────────────────────────────────────────────────────
+let _lastForecastData = null;
+
+function copyForecastAccuracy() {
+  if (!_lastForecastData) return;
+  const data = _lastForecastData;
+  const dhjAcc = data.direction_accuracy != null ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
+  const bsAcc  = data.bs_direction_accuracy != null ? `${(data.bs_direction_accuracy * 100).toFixed(1)}%` : '—';
+  const d = data.disagreements || {};
+  const lines = [
+    `DHJ Model Accuracy — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    `DHJ: ${dhjAcc} | Black-Scholes: ${bsAcc}`,
+    `${data.evaluated} evaluated · ${data.pending} pending`,
+  ];
+  if (d.total > 0) {
+    lines.push(`When they disagree (${d.total}): DHJ✓ ${d.dhj_right_bs_wrong} · BS✓ ${d.bs_right_dhj_wrong} · both✓ ${d.both_right} · both✗ ${d.both_wrong}`);
+  }
+  const sigParts = Object.entries(data.by_signal || {})
+    .filter(([, v]) => v.evaluated > 0)
+    .map(([sig, v]) => {
+      const a = v.accuracy != null ? `${(v.accuracy * 100).toFixed(0)}%` : '—';
+      return `${sig}: ${a} (${v.evaluated})`;
+    }).join(' · ');
+  if (sigParts) lines.push(sigParts);
+
+  if (data.recent && data.recent.length) {
+    lines.push('');
+    lines.push('PAIR       SIGNAL       DHJ  BS   ACTUAL        DHJ  BS   P(↑)');
+    lines.push('─'.repeat(66));
+    data.recent.forEach(f => {
+      const dDir = f.expected_direction === 'UP' ? '↑' : '↓';
+      const bDir = f.bs_expected_direction ? (f.bs_expected_direction === 'UP' ? '↑' : '↓') : '—';
+      const aDir = f.actual_move_pips > 0 ? '↑' : f.actual_move_pips < 0 ? '↓' : '→';
+      const dhj  = f.direction_correct ? '✓' : '✗';
+      const bs   = f.bs_direction_correct == null ? '—' : f.bs_direction_correct ? '✓' : '✗';
+      const sig  = f.signal.replace('_', ' ');
+      lines.push(
+        `${f.pair.padEnd(10)} ${sig.padEnd(13)} ${dDir}    ${bDir}    ${aDir} ${Math.abs(f.actual_move_pips || 0).toFixed(1)}p`.padEnd(45) +
+        `${dhj}    ${bs}    ${(f.prob_above_spot * 100).toFixed(1)}%`
+      );
+    });
+  }
+
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-forecast');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
 async function fetchForecastAccuracy() {
   try {
     const r = await apiFetch('/api/forecast/accuracy');
     if (!r.ok) return;
     const data = await r.json();
+    _lastForecastData = data;
 
     const dhjAcc = data.direction_accuracy != null ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
     const bsAcc  = data.bs_direction_accuracy != null ? `${(data.bs_direction_accuracy * 100).toFixed(1)}%` : '—';
