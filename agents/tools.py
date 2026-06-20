@@ -356,6 +356,21 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
     except FileNotFoundError as exc:
         return {"error": f"DHJ model not available: {exc}"}
 
+    # Derive delta_cp (spinor initial asymmetry) from current RSI momentum.
+    # RSI > 50 → bullish bias → positive delta_cp; RSI < 50 → negative.
+    # MACD histogram agreement amplifies; disagreement dampens.
+    ind = market_data.calculate_indicators(pair)
+    if ind:
+        rsi = ind.get("rsi", 50.0)
+        macd_hist = ind.get("macd_histogram", 0.0)
+        delta_cp = (rsi - 50.0) / 100.0           # range [-0.5, +0.5]
+        # dampen when RSI and MACD disagree
+        if (delta_cp > 0 and macd_hist < 0) or (delta_cp < 0 and macd_hist > 0):
+            delta_cp *= 0.5
+        delta_cp = max(-0.5, min(0.5, delta_cp))
+    else:
+        delta_cp = 0.0
+
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -364,7 +379,8 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
                 pair=oanda_pair,
                 spot=spot,
                 horizon_days=float(horizon_days),
-                n_paths=200,
+                n_paths=300,
+                delta_cp=delta_cp,
             ),
         )
     except Exception as exc:
@@ -383,15 +399,16 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
     expected_move_pips = round((result.mean_dhj - spot) / pip, 1)
 
     q5 = result.chiral_charge
-    # Q₅ (chiral charge) is the primary signal — it reflects spinor field asymmetry
-    # and is meaningful at any horizon. prob_above_spot only confirms strong signals.
-    if q5 > 0.04 and prob_up > 0.52:
+    # Q₅ (chiral charge) reflects spinor field asymmetry seeded from RSI momentum.
+    # Thresholds calibrated to the RSI-driven delta_cp scale (range ±0.5):
+    #   |Q5| > 0.15 → STRONG (RSI ~65+/35-)   |Q5| > 0.05 → MILD (RSI ~55+/45-)
+    if q5 > 0.15 and prob_up > 0.52:
         signal = "STRONG_BULLISH"
-    elif q5 > 0.015:
+    elif q5 > 0.05:
         signal = "MILD_BULLISH"
-    elif q5 < -0.04 and prob_up < 0.48:
+    elif q5 < -0.15 and prob_up < 0.48:
         signal = "STRONG_BEARISH"
-    elif q5 < -0.015:
+    elif q5 < -0.05:
         signal = "MILD_BEARISH"
     else:
         signal = "NEUTRAL"
@@ -406,6 +423,8 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         "expected_direction": "UP" if result.mean_dhj > spot else "DOWN",
         "prob_above_spot": prob_up,
         "chiral_charge": round(q5, 4),
+        "delta_cp": round(delta_cp, 4),
+        "rsi_at_forecast": round(ind["rsi"], 1) if ind else None,
         "implied_vol_annualized": round(result.avg_variance ** 0.5, 4),
         "dhj_call_price": round(result.call_dhj, 6),
         "bs_call_price": round(result.call_bs, 6),
