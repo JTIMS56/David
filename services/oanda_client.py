@@ -186,7 +186,72 @@ class OandaClient:
             resp.raise_for_status()
             return resp.json()
 
-    async def get_open_trades(self) -> list:
+    async def set_trade_orders(
+        self,
+        oanda_trade_id: str,
+        oanda_instrument: str,
+        sl_price: Optional[float] = None,
+        tp_price: Optional[float] = None,
+    ) -> dict:
+        """
+        Attach stop-loss and/or take-profit to an existing OANDA trade.
+
+        Called immediately after a market order fills so broker-level protection
+        is active even if our server restarts.
+
+        PUT /v3/accounts/{id}/trades/{tradeID}/orders
+        """
+        if not settings.oanda_api_key or not settings.oanda_account_id:
+            raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
+
+        body: dict = {}
+        if tp_price is not None:
+            body["takeProfit"] = {
+                "price": _fmt_price(tp_price, oanda_instrument),
+                "timeInForce": "GTC",
+            }
+        if sl_price is not None:
+            body["stopLoss"] = {
+                "price": _fmt_price(sl_price, oanda_instrument),
+                "timeInForce": "GTC",
+            }
+
+        if not body:
+            return {}
+
+        base, headers = self._setup()
+        url = f"{base}/v3/accounts/{settings.oanda_account_id}/trades/{oanda_trade_id}/orders"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.put(url, headers=headers, json=body)
+            if resp.status_code not in (200, 201):
+                raise RuntimeError(
+                    f"OANDA set_trade_orders failed [{resp.status_code}]: {resp.text}"
+                )
+            return resp.json()
+
+    async def get_trade(self, oanda_trade_id: str) -> Optional[dict]:
+        """
+        Fetch a single OANDA trade by ID regardless of state.
+
+        Returns the raw trade dict, or None if not found.
+        Used to reconcile our DB when OANDA closes a trade independently
+        (e.g. its own SL/TP fires while our server is restarting).
+        """
+        if not settings.oanda_api_key or not settings.oanda_account_id:
+            return None
+
+        base, headers = self._setup()
+        url = f"{base}/v3/accounts/{settings.oanda_account_id}/trades/{oanda_trade_id}"
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json().get("trade")
+
+
         """
         Fetch all open trades on the OANDA account.
 

@@ -197,6 +197,26 @@ class OrderService:
                             "OANDA order filled: trade_id=%s price=%s",
                             oanda_trade_id, fill_price,
                         )
+                        # Attach SL/TP to the trade so OANDA enforces them at
+                        # broker level — protects position if our server restarts.
+                        if oanda_trade_id and (stop_loss is not None or take_profit is not None):
+                            oanda_instrument = PAIR_TO_OANDA.get(pair, "")
+                            try:
+                                await oanda_client.set_trade_orders(
+                                    oanda_trade_id=oanda_trade_id,
+                                    oanda_instrument=oanda_instrument,
+                                    sl_price=stop_loss,
+                                    tp_price=take_profit,
+                                )
+                                logger.info(
+                                    "OANDA SL/TP attached: trade_id=%s sl=%s tp=%s",
+                                    oanda_trade_id, stop_loss, take_profit,
+                                )
+                            except Exception as sl_exc:
+                                logger.warning(
+                                    "OANDA SL/TP attach failed (internal monitor active): %s",
+                                    sl_exc,
+                                )
                 except Exception as exc:
                     logger.error("OANDA order execution failed: %s", exc, exc_info=True)
                     await _write_audit(
@@ -299,7 +319,23 @@ class OrderService:
                     )
                 except Exception as exc:
                     logger.error("OANDA close failed: %s", exc, exc_info=True)
-                    # Continue with paper close if OANDA fails
+                    # Trade may have been closed by OANDA's own SL/TP while our
+                    # server was down. Fetch the trade to get the actual fill.
+                    try:
+                        oanda_trade = await oanda_client.get_trade(pos.oanda_trade_id)
+                        if oanda_trade and oanda_trade.get("state") == "CLOSED":
+                            avg_close = oanda_trade.get("averageClosePrice")
+                            realised_pl = oanda_trade.get("realizedPL")
+                            if avg_close:
+                                close_price = float(avg_close)
+                            if realised_pl:
+                                pnl = float(realised_pl)
+                            logger.info(
+                                "OANDA trade was already closed: price=%s pnl=%s",
+                                close_price, pnl,
+                            )
+                    except Exception:
+                        pass  # fall through to paper close at current market price
 
             # ── Paper PnL calculation (used when no OANDA fill, or OANDA close failed) ─
             if pnl == 0.0:
