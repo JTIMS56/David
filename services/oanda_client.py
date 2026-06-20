@@ -251,7 +251,7 @@ class OandaClient:
             resp.raise_for_status()
             return resp.json().get("trade")
 
-
+    async def get_open_trades(self) -> list:
         """
         Fetch all open trades on the OANDA account.
 
