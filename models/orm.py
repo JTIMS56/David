@@ -3,10 +3,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+
+
+class CycleLock(Base):
+    """
+    Singleton row (id=1) used as a distributed mutex across uvicorn workers.
+    A worker INSERTs this row before running a cycle; if the INSERT fails
+    (PRIMARY KEY conflict), another worker already holds the lock.
+    Automatically expires after 10 minutes to prevent stuck locks on crash.
+    """
+    __tablename__ = "cycle_lock"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    worker_pid: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 class PriceTick(Base):

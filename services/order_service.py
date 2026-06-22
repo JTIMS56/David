@@ -197,6 +197,39 @@ class OrderService:
                             "OANDA order filled: trade_id=%s price=%s",
                             oanda_trade_id, fill_price,
                         )
+                        # Post-fill SL/TP sanity check: the fill can differ from the
+                        # market data price used for gate validation.  If the fill
+                        # price moved past TP or put SL on the wrong side, abort now.
+                        if fill_price:
+                            _fp = float(fill_price)
+                            _abort: str | None = None
+                            if direction == "BUY":
+                                if stop_loss is not None and stop_loss >= _fp:
+                                    _abort = f"fill {_fp:.5f} at or below BUY stop_loss {stop_loss:.5f}"
+                                elif take_profit is not None and take_profit <= _fp:
+                                    _abort = f"fill {_fp:.5f} at or above BUY take_profit {take_profit:.5f}"
+                            else:
+                                if stop_loss is not None and stop_loss <= _fp:
+                                    _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f}"
+                                elif take_profit is not None and take_profit >= _fp:
+                                    _abort = f"fill {_fp:.5f} at or below SELL take_profit {take_profit:.5f}"
+                            if _abort and oanda_trade_id:
+                                logger.error(
+                                    "Post-fill abort [%s %s]: %s — closing trade immediately",
+                                    direction, pair, _abort,
+                                )
+                                try:
+                                    await oanda_client.close_trade(oanda_trade_id)
+                                except Exception as _ce:
+                                    logger.error("Failed to close aborted OANDA trade: %s", _ce)
+                                await _write_audit(
+                                    source=source, event_type="ORDER_REJECT",
+                                    pair=pair, direction=direction, size=size,
+                                    entry_price=_fp, stop_loss=stop_loss, take_profit=take_profit,
+                                    gate_allowed=False,
+                                    gate_reason=f"Post-fill SL/TP invalid: {_abort}",
+                                )
+                                return False, f"Order aborted after fill: {_abort}", None
                         # Attach SL/TP to the trade so OANDA enforces them at
                         # broker level — protects position if our server restarts.
                         if oanda_trade_id and (stop_loss is not None or take_profit is not None):

@@ -20,7 +20,7 @@ from sqlalchemy import desc, select
 
 from config import settings
 from database import AsyncSessionLocal
-from models.orm import AgentDecision
+from models.orm import AgentDecision, CycleLock
 from agents.tools import TOOL_DEFINITIONS, handle_tool_call
 from services.portfolio_service import portfolio_service
 
@@ -199,37 +199,59 @@ class TradingAgent:
             logger.warning("Cycle already running — skipping concurrent request")
             return {"cycle": self._cycle, "skipped": True, "reason": "Another cycle is already running"}
 
-        # Cross-worker cooldown: consult DB so that multiple uvicorn workers
-        # (or a rapid manual "Run Now") don't fire back-to-back cycles.
-        _COOLDOWN_SECS = 90
+        # Cross-worker mutex: attempt to INSERT the singleton CycleLock row.
+        # SQLite's PRIMARY KEY uniqueness makes this atomic — the second worker's
+        # INSERT fails if the first already holds the lock.
+        _LOCK_TTL_SECS = 600   # stale lock expires after 10 min (crash-safe)
+        import os as _os
         try:
             async with AsyncSessionLocal() as _db:
-                _res = await _db.execute(
-                    select(AgentDecision).order_by(desc(AgentDecision.timestamp)).limit(1)
-                )
-                _last = _res.scalar_one_or_none()
-                if _last is not None:
-                    _ts = _last.timestamp
-                    if _ts.tzinfo is None:
-                        _ts = _ts.replace(tzinfo=timezone.utc)
-                    _age = (datetime.now(timezone.utc) - _ts).total_seconds()
-                    if _age < _COOLDOWN_SECS:
+                _existing = await _db.get(CycleLock, 1)
+                if _existing is not None:
+                    _lock_age = (datetime.now(timezone.utc).replace(tzinfo=None) - _existing.started_at).total_seconds()
+                    if _lock_age < _LOCK_TTL_SECS:
                         logger.info(
-                            "Cycle cooldown: last decision was %.0fs ago — skipping", _age
+                            "Cycle lock held by pid=%s (%.0fs ago) — skipping",
+                            _existing.worker_pid, _lock_age,
                         )
                         return {
                             "cycle": self._cycle,
                             "skipped": True,
-                            "reason": f"Cooldown: last cycle completed {_age:.0f}s ago",
+                            "reason": f"Another worker holds cycle lock ({_lock_age:.0f}s)",
                         }
+                    # Stale lock — take it over
+                    _existing.started_at = datetime.utcnow()
+                    _existing.worker_pid = _os.getpid()
+                else:
+                    _db.add(CycleLock(id=1, started_at=datetime.utcnow(), worker_pid=_os.getpid()))
+                try:
+                    await _db.commit()
+                except Exception:
+                    # Another worker committed first (race on INSERT) — we lost
+                    await _db.rollback()
+                    logger.info("Cycle lock race lost to another worker — skipping")
+                    return {
+                        "cycle": self._cycle,
+                        "skipped": True,
+                        "reason": "Another worker won the cycle lock race",
+                    }
         except Exception:
-            logger.exception("Cooldown DB check failed — proceeding anyway")
+            logger.exception("Cycle lock DB check failed — proceeding anyway")
 
         self._cycle_running = True
         try:
             return await self._run_once_inner()
         finally:
             self._cycle_running = False
+            # Release the cross-worker lock
+            try:
+                async with AsyncSessionLocal() as _db:
+                    _lock = await _db.get(CycleLock, 1)
+                    if _lock is not None:
+                        await _db.delete(_lock)
+                        await _db.commit()
+            except Exception:
+                logger.exception("Failed to release cycle lock")
 
     async def _run_once_inner(self) -> Dict[str, Any]:
         self._cycle += 1
