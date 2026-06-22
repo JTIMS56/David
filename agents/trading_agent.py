@@ -126,6 +126,13 @@ Make ONE corrected attempt using the exact fix described. If still rejected, SKI
 entirely. Do NOT try a third time or vary parameters at random — move on to the next pair. \
 Exhausting your tool budget on retries is worse than missing a trade.
 
+**Post-fill aborts**: OANDA can fill an order 10–30 pips away from the quoted price during
+volatile conditions (e.g. news, extreme RSI). If the actual fill price degrades the realized
+R:R below 1.0, the order is automatically aborted and you will receive:
+  {"success": false, "message": "Order aborted after fill: post-fill R:R ..."}
+This is NOT a risk-gate rejection — the order executed and was then closed immediately.
+Treat it the same as a SKIP: do not retry, move to the next pair.
+
 ## DHJ Price Forecast
 get_price_forecast runs the Dirac-Heston-Jump model — a physics-based probabilistic
 price distribution engine that accounts for stochastic volatility, fat tails, and

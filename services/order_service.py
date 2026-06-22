@@ -200,8 +200,12 @@ class OrderService:
                         # Post-fill SL/TP sanity check: the fill can differ from the
                         # market data price used for gate validation.  If the fill
                         # price moved past TP or put SL on the wrong side, abort now.
+                        # Also enforce a post-fill R:R floor: if slippage degraded
+                        # the realized R:R below 1.0, the trade is no longer worth
+                        # taking (originally planned at ≥ 1.5).
                         if fill_price:
                             _fp = float(fill_price)
+                            _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
                             _abort: str | None = None
                             if direction == "BUY":
                                 if stop_loss is not None and stop_loss >= _fp:
@@ -213,6 +217,17 @@ class OrderService:
                                     _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f}"
                                 elif take_profit is not None and take_profit >= _fp:
                                     _abort = f"fill {_fp:.5f} at or below SELL take_profit {take_profit:.5f}"
+                            # R:R floor — slippage can widen stop relative to reward
+                            if _abort is None and take_profit is not None and stop_loss is not None:
+                                _risk = abs(_fp - stop_loss) / _pip
+                                _reward = abs(take_profit - _fp) / _pip
+                                _rr = _reward / _risk if _risk > 0 else 0.0
+                                if _rr < 1.0:
+                                    _abort = (
+                                        f"post-fill R:R {_rr:.2f} below 1.0 "
+                                        f"(fill {_fp:.5f}, stop {stop_loss:.5f} [{_risk:.1f}p], "
+                                        f"tp {take_profit:.5f} [{_reward:.1f}p])"
+                                    )
                             if _abort and oanda_trade_id:
                                 logger.error(
                                     "Post-fill abort [%s %s]: %s — closing trade immediately",
