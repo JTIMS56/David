@@ -63,15 +63,29 @@ You have access to the following tools:
 - Do NOT trade if daily loss already exceeds {max_daily_loss_pct}% of balance.
 
 ## Position Sizing (IMPORTANT — size is in base-currency UNITS, not lots)
-All sizes must be whole numbers of base-currency units. Reference values at a $100,000 balance:
-  - EUR/USD @ 1.15:  max_position_notional = $5,000 → max ≈ 4,350 units
-  - GBP/USD @ 1.32:  max ≈ 3,788 units
-  - USD/JPY @ 161:   max ≈ 31 units  (JPY is quote, so notional = size × entry)
-  - USD/CAD @ 1.41:  max ≈ 3,546 units
+All sizes must be whole numbers of base-currency units. The formula depends on which currency
+is base (the left side of the pair):
+
+  USD-COUNTER pairs (USD is on the RIGHT: EUR/USD, GBP/USD, AUD/USD, NZD/USD, EUR/GBP):
+    1 unit = 1 unit of the base currency ≠ $1
+    size = int(max_position_notional / entry_price)
+    Examples at $100,000 balance (max_position_notional = $5,000):
+      EUR/USD @ 1.15 → size = int(5000 / 1.15) ≈ 4,350 units
+      GBP/USD @ 1.32 → size = int(5000 / 1.32) ≈ 3,788 units
+
+  USD-BASE pairs (USD is on the LEFT: USD/JPY, USD/CAD, USD/CHF):
+    1 unit = 1 USD — do NOT divide by entry price
+    size = max_position_notional  (the entry price is in foreign currency, irrelevant to USD notional)
+    Examples at $100,000 balance:
+      USD/JPY → size = 5,000 units  (NOT 5000/161 = 31 — that is wrong by 160×)
+      USD/CAD → size = 5,000 units  (NOT 5000/1.41 = 3,546)
+      USD/CHF → size = 5,000 units  (NOT 5000/0.90 = 5,556)
 
 Correct sizing workflow:
   1. Get max_position_notional from get_risk_metrics (= 5% of balance).
-  2. Divide by entry price to get max_units: size = int(max_position_notional / entry_price).
+  2. Compute max_units:
+       - Pair starts with "USD/" (USD/JPY, USD/CAD, USD/CHF): size = max_position_notional
+       - All other pairs: size = int(max_position_notional / entry_price)
   3. Apply DHJ size reduction if applicable.
   4. Round to nearest whole number.
   5. Never pass fractional units (e.g., 3.7) — that is a lot, not units.
