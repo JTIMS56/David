@@ -189,12 +189,12 @@ class MarketDataService:
 
     # ── OANDA price feed ──────────────────────────────────────────────────────
 
-    async def _oanda_loop(self) -> None:
-        """Poll OANDA pricing API every 5 seconds for real bid/ask prices."""
+    async def _oanda_poll_loop(self) -> None:
+        """Poll OANDA pricing API every 5 seconds (fallback when streaming fails)."""
         from services.oanda_client import oanda_client, OANDA_TO_PAIR
         import logging as _log
         logger = _log.getLogger("david.market_data")
-        logger.info("OANDA market data: starting price feed")
+        logger.info("OANDA market data: polling mode (streaming unavailable)")
         while self._running:
             try:
                 data = await oanda_client.get_prices(list(PAIR_CONFIG.keys()))
@@ -211,9 +211,68 @@ class MarketDataService:
                     self._history[pair].append(bar)
                     updated += 1
                 if updated:
-                    logger.debug("OANDA: updated %d pairs", updated)
+                    logger.debug("OANDA poll: updated %d pairs", updated)
             except Exception as exc:
                 logger.warning("OANDA price poll failed: %s", exc)
+            await asyncio.sleep(5)
+
+    async def _oanda_stream_loop(self) -> None:
+        """
+        Consume OANDA SSE price stream. Reconnects on disconnect with 5s backoff.
+        Falls back to _oanda_poll_loop() after 3 consecutive quick disconnects
+        (connected < 30s), which signals that streaming is unavailable.
+        """
+        from services.oanda_client import oanda_client, OANDA_TO_PAIR
+        import logging as _log
+        logger = _log.getLogger("david.market_data")
+
+        pairs = list(PAIR_CONFIG.keys())
+        quick_fail_count = 0
+        _QUICK_FAIL_SECS = 30.0
+        _QUICK_FAIL_LIMIT = 3
+
+        while self._running:
+            connected_at = time.monotonic()
+            try:
+                logger.info("OANDA streaming: connecting to price stream")
+                async for tick in oanda_client.stream_prices(pairs):
+                    if not self._running:
+                        return
+                    tick_type = tick.get("type")
+                    if tick_type == "PRICE":
+                        instrument = tick.get("instrument", "")
+                        pair = OANDA_TO_PAIR.get(instrument)
+                        if pair and tick.get("tradeable", True):
+                            bid = float(tick["bids"][0]["price"])
+                            ask = float(tick["asks"][0]["price"])
+                            bar = PriceBar(datetime.now(timezone.utc), bid, ask)
+                            self._prices[pair] = bar
+                            self._history[pair].append(bar)
+                    elif tick_type == "HEARTBEAT":
+                        logger.debug("OANDA stream heartbeat")
+                elapsed = time.monotonic() - connected_at
+                logger.warning("OANDA stream closed by server after %.0fs", elapsed)
+            except Exception as exc:
+                elapsed = time.monotonic() - connected_at
+                logger.warning("OANDA stream error after %.0fs: %s", elapsed, exc)
+
+            if not self._running:
+                return
+
+            elapsed = time.monotonic() - connected_at
+            if elapsed < _QUICK_FAIL_SECS:
+                quick_fail_count += 1
+                if quick_fail_count >= _QUICK_FAIL_LIMIT:
+                    logger.error(
+                        "OANDA stream: %d quick disconnects in a row — "
+                        "falling back to REST polling",
+                        quick_fail_count,
+                    )
+                    await self._oanda_poll_loop()
+                    return
+            else:
+                quick_fail_count = 0
+
             await asyncio.sleep(5)
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -221,7 +280,7 @@ class MarketDataService:
     async def start(self) -> None:
         self._running = True
         if settings.market_data_mode == "oanda" and settings.oanda_api_key:
-            self._task = asyncio.create_task(self._oanda_loop())
+            self._task = asyncio.create_task(self._oanda_stream_loop())
         elif settings.market_data_mode == "live" and settings.alpha_vantage_key:
             self._task = asyncio.create_task(self._live_loop())
         else:

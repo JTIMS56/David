@@ -6,8 +6,9 @@ environments. Used by market_data (price feed) and order_service (execution).
 """
 from __future__ import annotations
 
+import json
 import logging
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 import httpx
 
@@ -250,6 +251,43 @@ class OandaClient:
                 return None
             resp.raise_for_status()
             return resp.json().get("trade")
+
+    async def stream_prices(self, pairs: list[str]) -> AsyncGenerator[dict, None]:
+        """
+        Stream real-time prices via OANDA's SSE pricing stream.
+
+        Yields parsed JSON dicts: {"type": "PRICE", "instrument": ..., "bids": [...], "asks": [...], ...}
+        or {"type": "HEARTBEAT", "time": ...} every ~5s.
+
+        Uses the streaming domain (stream-fxpractice / stream-fxtrade), not the
+        REST domain. Read timeout is 15s — if no bytes arrive in 15s the server
+        is considered dead and an httpx.ReadTimeout is raised so the caller reconnects.
+        """
+        if not settings.oanda_api_key or not settings.oanda_account_id:
+            raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
+
+        instruments = ",".join(
+            PAIR_TO_OANDA[p] for p in pairs if p in PAIR_TO_OANDA
+        )
+        if not instruments:
+            return
+
+        if settings.oanda_environment == "live":
+            stream_base = "https://stream-fxtrade.oanda.com"
+        else:
+            stream_base = "https://stream-fxpractice.oanda.com"
+
+        _, headers = self._setup()
+        url = f"{stream_base}/v3/accounts/{settings.oanda_account_id}/pricing/stream"
+        params = {"instruments": instruments}
+        timeout = httpx.Timeout(connect=10.0, read=15.0, write=None, pool=None)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream("GET", url, headers=headers, params=params) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line.strip():
+                        yield json.loads(line)
 
     async def get_open_trades(self) -> list:
         """
