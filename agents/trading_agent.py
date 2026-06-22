@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import anthropic
+from sqlalchemy import desc, select
 
 from config import settings
 from database import AsyncSessionLocal
@@ -97,16 +98,20 @@ A SELL with stop_loss BELOW entry, or TP ABOVE entry, will be rejected by the ri
 7. Use the CURRENT ask/bid from get_fx_rates (call it immediately before placing):
      BUY:  entry = ask
            stop_loss   = round(ask - stop_distance, 5)
-           take_profit = round(ask + stop_distance × 1.5, 5)
+           take_profit = round(ask + stop_distance × 1.6, 5)
      SELL: entry = bid
            stop_loss   = round(bid + stop_distance, 5)
-           take_profit = round(bid - stop_distance × 1.5, 5)
+           take_profit = round(bid - stop_distance × 1.6, 5)
+
+   Use 1.6× (not 1.5×) for the TP — the extra 0.1× buffer absorbs the 1-2 pip
+   price movement between when you fetch the rate and when the order executes,
+   ensuring the realized R:R stays above the 1.5 gate minimum.
 
 Example (EUR/GBP BUY, ask=0.8672, ATR=4 pips):
   raw_stop_pips = 4 × 1.5 = 6 → floor to 20
   stop_distance = 20 × 0.0001 = 0.0020
   stop_loss   = 0.8672 - 0.0020 = 0.8652
-  take_profit = 0.8672 + 0.0030 = 0.8702  (20 × 1.5 = 30 pips)
+  take_profit = 0.8672 + 0.0032 = 0.8704  (20 × 1.6 = 32 pips)
 
 ## Order Rejection Protocol
 If place_order returns success=false, read the message field EXACTLY:
@@ -193,6 +198,32 @@ class TradingAgent:
         if self._cycle_running:
             logger.warning("Cycle already running — skipping concurrent request")
             return {"cycle": self._cycle, "skipped": True, "reason": "Another cycle is already running"}
+
+        # Cross-worker cooldown: consult DB so that multiple uvicorn workers
+        # (or a rapid manual "Run Now") don't fire back-to-back cycles.
+        _COOLDOWN_SECS = 90
+        try:
+            async with AsyncSessionLocal() as _db:
+                _res = await _db.execute(
+                    select(AgentDecision).order_by(desc(AgentDecision.timestamp)).limit(1)
+                )
+                _last = _res.scalar_one_or_none()
+                if _last is not None:
+                    _ts = _last.timestamp
+                    if _ts.tzinfo is None:
+                        _ts = _ts.replace(tzinfo=timezone.utc)
+                    _age = (datetime.now(timezone.utc) - _ts).total_seconds()
+                    if _age < _COOLDOWN_SECS:
+                        logger.info(
+                            "Cycle cooldown: last decision was %.0fs ago — skipping", _age
+                        )
+                        return {
+                            "cycle": self._cycle,
+                            "skipped": True,
+                            "reason": f"Cooldown: last cycle completed {_age:.0f}s ago",
+                        }
+        except Exception:
+            logger.exception("Cooldown DB check failed — proceeding anyway")
 
         self._cycle_running = True
         try:

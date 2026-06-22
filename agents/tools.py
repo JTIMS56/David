@@ -288,13 +288,27 @@ async def _place_order(inputs: dict) -> dict:
         pair, direction, size, entry_price, stop_loss, take_profit
     )
     if not check.allowed:
-        hint = (
-            f"Current entry={entry_price:.5f}, stop_loss={stop_loss}, "
-            f"stop_pips={current_stop_pips}. "
-            "Use stop_pips = max(atr_pips × 1.5, 20), compute stop_distance = stop_pips × pip_size, "
-            f"then BUY: SL=entry-stop_distance, TP=entry+stop_distance×1.5. "
-            "If still failing after ONE retry, skip this pair."
-        )
+        # Pre-compute the correct SL/TP so the agent has exact values, not just a formula
+        _ind = market_data.calculate_indicators(pair)
+        atr_pips = _ind.get("atr_pips", 0) if _ind else 0
+        correct_stop_pips = max(atr_pips * 1.5, 20.0)
+        correct_stop_dist = correct_stop_pips * pip
+        if direction == "BUY":
+            correct_sl = round(entry_price - correct_stop_dist, 5)
+            correct_tp = round(entry_price + correct_stop_dist * 1.6, 5)
+        else:
+            correct_sl = round(entry_price + correct_stop_dist, 5)
+            correct_tp = round(entry_price - correct_stop_dist * 1.6, 5)
+        hint = {
+            "entry_price_now": round(entry_price, 5),
+            "atr_pips": round(atr_pips, 1),
+            "correct_stop_pips": round(correct_stop_pips, 1),
+            "use_exactly": {
+                "stop_loss": correct_sl,
+                "take_profit": correct_tp,
+            },
+            "rule": "If still rejected after ONE retry with these exact values, skip this pair.",
+        }
         return {
             "success": False,
             "message": f"Risk check failed: {check.reason}",
