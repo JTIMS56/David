@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>David — AI FX Trading Platform</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:        #0d1117;
+      --surface:   #161b22;
+      --border:    #30363d;
+      --text:      #c9d1d9;
+      --muted:     #8b949e;
+      --accent:    #58a6ff;
+      --green:     #3fb950;
+      --red:       #f85149;
+      --yellow:    #d29922;
+      --purple:    #bc8cff;
+      --radius:    6px;
+      --font:      'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text);
+                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                 font-size: 13px; }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+    .app { display: grid; grid-template-rows: 56px 1fr; height: 100vh; }
+    .main { display: grid; grid-template-columns: 260px 1fr; overflow: hidden; }
+    .sidebar { border-right: 1px solid var(--border); overflow-y: auto;
+               padding: 12px 8px; display: flex; flex-direction: column; gap: 12px; }
+    .content { overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    .header { background: var(--surface); border-bottom: 1px solid var(--border);
+              display: flex; align-items: center; padding: 0 20px; gap: 16px; }
+    .header h1 { font-size: 16px; font-weight: 700; color: var(--accent);
+                 letter-spacing: -0.3px; }
+    .header h1 span { color: var(--muted); font-weight: 400; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .status-dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .badge { font-size: 11px; padding: 2px 8px; border-radius: 12px;
+             background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
+    .badge.demo { background: rgba(210,153,34,0.15); color: var(--yellow); border-color: rgba(210,153,34,0.3); }
+    .badge.oanda { background: rgba(63,185,80,0.15); color: var(--green); border-color: rgba(63,185,80,0.3); }
+
+    /* ── Cards ─────────────────────────────────────────────────────────── */
+    .card { background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 14px; }
+    .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px;
+                  color: var(--muted); margin-bottom: 10px; font-weight: 600; }
+
+    /* ── Metric tiles ────────────────────────────────────────────────────── */
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); padding: 14px 16px; }
+    .metric-label { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+    .metric-value { font-size: 22px; font-weight: 700; font-family: var(--font); line-height: 1; }
+    .metric-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .pos { color: var(--green); }
+    .neg { color: var(--red); }
+    .neu { color: var(--text); }
+
+    /* ── Rates ticker ────────────────────────────────────────────────────── */
+    .rates-grid { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .rate-row { display: flex; justify-content: space-between; align-items: center;
+                padding: 6px 8px; border-radius: 4px; cursor: pointer;
+                transition: background 0.15s; }
+    .rate-row:hover { background: rgba(255,255,255,0.04); }
+    .rate-pair { font-weight: 600; font-size: 12px; color: var(--text); }
+    .rate-price { font-family: var(--font); font-size: 12px; }
+    .rate-change { font-size: 11px; min-width: 52px; text-align: right; }
+    .rate-spread { font-size: 10px; color: var(--muted); }
+    .flash-up { animation: flashUp 0.4s ease; }
+    .flash-down { animation: flashDown 0.4s ease; }
+    @keyframes flashUp   { 0% { background: rgba(63,185,80,0.25); }  100% { background: transparent; } }
+    @keyframes flashDown { 0% { background: rgba(248,81,73,0.25); }  100% { background: transparent; } }
+
+    /* ── Positions table ────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th { padding: 8px 10px; text-align: left; color: var(--muted); font-weight: 500;
+         border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase;
+         letter-spacing: 0.5px; white-space: nowrap; }
+    td { padding: 8px 10px; border-bottom: 1px solid rgba(48,54,61,0.5); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .dir-buy { color: var(--green); font-weight: 600; }
+    .dir-sell { color: var(--red); font-weight: 600; }
+    .btn-close { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3);
+                 border-radius: 4px; padding: 3px 8px; cursor: pointer; font-size: 11px;
+                 transition: background 0.15s; }
+    .btn-close:hover { background: rgba(248,81,73,0.3); }
+    .empty-state { text-align: center; color: var(--muted); padding: 24px; font-size: 12px; }
+
+    /* ── Agent panel ────────────────────────────────────────────────────── */
+    .agent-controls { display: flex; gap: 8px; margin-bottom: 12px; }
+    .btn { border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px;
+           font-weight: 500; border: 1px solid transparent; transition: all 0.15s; }
+    .btn-primary { background: var(--accent); color: #000; border-color: var(--accent); }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-secondary { background: transparent; color: var(--text); border-color: var(--border); }
+    .btn-secondary:hover { background: rgba(255,255,255,0.05); }
+    .btn-danger { background: transparent; color: var(--red); border-color: rgba(248,81,73,0.4); }
+    .btn-danger:hover { background: rgba(248,81,73,0.1); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .decision-log { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; }
+    .decision-item { background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+                     border-radius: 4px; padding: 10px 12px; }
+    .decision-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .decision-cycle { font-size: 11px; color: var(--accent); font-weight: 600; }
+    .decision-time { font-size: 11px; color: var(--muted); }
+    .decision-copy { font-size: 10px; padding: 2px 7px; border-radius: 4px; cursor: pointer;
+                     background: transparent; color: var(--muted); border: 1px solid var(--border);
+                     transition: all 0.15s; white-space: nowrap; }
+    .decision-copy:hover { color: var(--text); border-color: var(--accent); }
+    .decision-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+    .action-tag { font-size: 10px; padding: 2px 6px; border-radius: 10px;
+                  background: rgba(88,166,255,0.1); color: var(--accent);
+                  border: 1px solid rgba(88,166,255,0.2); }
+    .decision-reasoning { font-size: 11px; color: var(--muted); line-height: 1.5;
+                          white-space: pre-wrap; max-height: 120px; overflow-y: auto;
+                          font-family: var(--font); }
+
+    /* ── Equity chart ────────────────────────────────────────────────────── */
+    #equity-chart { width: 100%; height: 160px; }
+
+    /* ── Bottom row ─────────────────────────────────────────────────────── */
+    .bottom-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    /* ── Scrollbar ──────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* ── Responsive ─────────────────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      .main { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+      .metrics { grid-template-columns: repeat(2, 1fr); }
+      .bottom-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="status-dot" id="ws-dot"></div>
+    <h1>David <span>/ AI FX Trading</span></h1>
+    <span class="badge" id="mode-badge">PAPER</span>
+    <span class="badge demo" id="agent-mode-badge">DEMO</span>
+    <div class="header-right">
+      <span id="clock" style="color:var(--muted);font-size:12px;font-family:var(--font)"></span>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- Sidebar: live rates -->
+    <aside class="sidebar">
+      <div class="card-title" style="padding: 0 8px;">FX Rates</div>
+      <div class="rates-grid" id="rates-grid">
+        <div class="empty-state">Connecting…</div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="content">
+      <!-- Metrics row -->
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">Balance</div>
+          <div class="metric-value neu" id="m-balance">—</div>
+          <div class="metric-sub" id="m-balance-label">Paper USD</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Equity</div>
+          <div class="metric-value neu" id="m-equity">—</div>
+          <div class="metric-sub" id="m-unrealised">Unrealised: —</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Daily P&amp;L</div>
+          <div class="metric-value" id="m-daily-pnl">—</div>
+          <div class="metric-sub" id="m-total-pnl">All-time: —</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Open Positions</div>
+          <div class="metric-value neu" id="m-positions">—</div>
+          <div class="metric-sub" id="m-agent-status">Agent: —</div>
+        </div>
+      </div>
+
+      <!-- Equity chart -->
+      <div class="card">
+        <div class="card-title">Equity Curve</div>
+        <canvas id="equity-chart"></canvas>
+      </div>
+
+      <!-- Open positions -->
+      <div class="card">
+        <div class="card-title">Open Positions</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th><th>Pair</th><th>Dir</th><th>Size</th>
+                <th>Entry</th><th>Current</th><th>SL</th><th>TP</th>
+                <th>PnL</th><th>Opened</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="positions-tbody">
+              <tr><td colspan="11" class="empty-state">No open positions</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- DHJ Forecast Accuracy -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">DHJ Model Accuracy</div>
+          <button class="decision-copy" id="btn-copy-forecast" onclick="copyForecastAccuracy()">Copy</button>
+        </div>
+        <div id="forecast-summary" style="font-size:12px;color:var(--muted)">Awaiting evaluated forecasts…</div>
+        <div class="table-wrap" style="max-height:200px;overflow-y:auto;margin-top:10px">
+          <table>
+            <thead>
+              <tr><th>Pair</th><th>Signal</th><th>DHJ→</th><th>BS→</th><th>Actual</th><th>DHJ</th><th>BS</th><th>P(↑)</th><th>Forecasted</th></tr>
+            </thead>
+            <tbody id="forecast-tbody">
+              <tr><td colspan="9" class="empty-state">First results appear 1 day after first forecast</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Bottom row: Agent log + Trade history -->
+      <div class="bottom-grid">
+        <!-- Agent decisions -->
+        <div class="card">
+          <div class="card-title">Agent Decision Log</div>
+          <div class="agent-controls">
+            <button class="btn btn-primary" id="btn-run-once">Run Now</button>
+            <button class="btn btn-secondary" id="btn-start-agent">Start</button>
+            <button class="btn btn-danger" id="btn-stop-agent">Stop</button>
+          </div>
+          <div class="decision-log" id="decision-log">
+            <div class="empty-state">No decisions yet</div>
+          </div>
+        </div>
+
+        <!-- Trade history -->
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div class="card-title" style="margin-bottom:0">Trade History</div>
+            <button class="decision-copy" id="btn-copy-trades" onclick="copyTradeHistory()">Copy</button>
+          </div>
+          <div class="table-wrap" style="max-height:360px;overflow-y:auto">
+            <table>
+              <thead>
+                <tr><th>Pair</th><th>Action</th><th>Dir</th><th>Size</th><th>Price</th><th>PnL</th><th>Time</th></tr>
+              </thead>
+              <tbody id="trades-tbody">
+                <tr><td colspan="7" class="empty-state">No trades yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+// ── Auth ────────────────────────────────────────────────────────────────────
+let _apiKey = localStorage.getItem('david_api_key') || '';
+if (!_apiKey) {
+  _apiKey = prompt('Enter your API key to access the dashboard:') || '';
+  if (_apiKey) localStorage.setItem('david_api_key', _apiKey);
+}
+const authHeaders = () => _apiKey ? { 'X-API-Key': _apiKey } : {};
+const apiFetch = (url, opts = {}) => fetch(url, {
+  ...opts,
+  headers: { ...authHeaders(), ...(opts.headers || {}) },
+});
+
+// ── Utilities ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt = (n, d=2) => (n === null || n === undefined) ? '—' :
+  (typeof n === 'number' ? n.toFixed(d) : n);
+const fmtUSD = n => '$' + fmt(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const pnlClass = n => n > 0 ? 'pos' : n < 0 ? 'neg' : 'neu';
+const pnlSign = n => n > 0 ? '+' : '';
+const relTime = ts => {
+  // Treat bare ISO strings (no Z / offset) as UTC to prevent local-time shift
+  const utc = /Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : ts + 'Z';
+  const d = (Date.now() - new Date(utc)) / 1000;
+  if (d < 2) return 'just now';
+  if (d < 60) return `${d|0}s ago`;
+  if (d < 3600) return `${(d/60)|0}m ago`;
+  return `${(d/3600)|0}h ago`;
+};
+
+// ── Equity chart ─────────────────────────────────────────────────────────────
+const chartCanvas = $('equity-chart');
+const ctx = chartCanvas.getContext('2d');
+let equityData = [];
+const MAX_CHART_POINTS = 200;
+
+function resizeChart() {
+  chartCanvas.width = chartCanvas.offsetWidth;
+  chartCanvas.height = 160;
+  drawChart();
+}
+
+function drawChart() {
+  const W = chartCanvas.width, H = chartCanvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (equityData.length < 2) return;
+
+  const vals = equityData.map(d => d.equity);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const range = maxV - minV || 1;
+  const pad = { top: 10, bottom: 20, left: 10, right: 10 };
+  const cW = W - pad.left - pad.right;
+  const cH = H - pad.top - pad.bottom;
+
+  const xOf = i => pad.left + (i / (vals.length - 1)) * cW;
+  const yOf = v => pad.top + (1 - (v - minV) / range) * cH;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(48,54,61,0.6)';
+  ctx.lineWidth = 1;
+  [0.25, 0.5, 0.75].forEach(frac => {
+    const y = pad.top + frac * cH;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+  });
+
+  // Gradient fill
+  const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+  const isPos = vals[vals.length - 1] >= vals[0];
+  grad.addColorStop(0, isPos ? 'rgba(63,185,80,0.25)' : 'rgba(248,81,73,0.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(vals[0]));
+  vals.forEach((v, i) => { if (i > 0) ctx.lineTo(xOf(i), yOf(v)); });
+  ctx.lineTo(xOf(vals.length - 1), H - pad.bottom);
+  ctx.lineTo(xOf(0), H - pad.bottom);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(xOf(0), yOf(vals[0]));
+  vals.forEach((v, i) => { if (i > 0) ctx.lineTo(xOf(i), yOf(v)); });
+  ctx.strokeStyle = isPos ? '#3fb950' : '#f85149';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Min / Max labels
+  ctx.fillStyle = 'rgba(139,148,158,0.8)';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText(fmtUSD(maxV), W - pad.right, pad.top + 10);
+  ctx.fillText(fmtUSD(minV), W - pad.right, H - pad.bottom - 2);
+}
+
+window.addEventListener('resize', resizeChart);
+resizeChart();
+
+// ── State ────────────────────────────────────────────────────────────────────
+let prevPrices = {};
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+let ws, reconnectTimer;
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    $('ws-dot').classList.add('live');
+    clearTimeout(reconnectTimer);
+  };
+  ws.onclose = () => {
+    $('ws-dot').classList.remove('live');
+    reconnectTimer = setTimeout(connect, 3000);
+  };
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.event === 'prices') handlePricesUpdate(msg);
+    if (msg.event === 'position_opened' || msg.event === 'position_closed') {
+      fetchPositions(); fetchTrades();
+    }
+  };
+}
+
+connect();
+
+// ── Price update ──────────────────────────────────────────────────────────────
+function handlePricesUpdate(msg) {
+  updateRates(msg.rates);
+  if (msg.portfolio) updateMetrics(msg.portfolio);
+  if (msg.agent) updateAgentBadge(msg.agent);
+}
+
+function updateRates(rates) {
+  const grid = $('rates-grid');
+  Object.entries(rates).forEach(([pair, r]) => {
+    let row = document.querySelector(`[data-pair="${pair}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'rate-row';
+      row.setAttribute('data-pair', pair);
+      row.innerHTML = `<span class="rate-pair">${pair}</span>
+        <span style="text-align:right">
+          <div class="rate-price" data-field="mid"></div>
+          <div class="rate-spread" data-field="spread"></div>
+        </span>`;
+      grid.innerHTML = '';
+      grid.appendChild(row);
+      // re-add all
+    }
+    const prev = prevPrices[pair];
+    const midEl = row.querySelector('[data-field="mid"]');
+    const spreadEl = row.querySelector('[data-field="spread"]');
+    midEl.textContent = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
+    spreadEl.textContent = r.spread_pips.toFixed(1) + ' pip';
+    if (prev) {
+      if (r.mid > prev.mid) { row.classList.remove('flash-down'); row.classList.add('flash-up'); midEl.className = 'rate-price pos'; }
+      else if (r.mid < prev.mid) { row.classList.remove('flash-up'); row.classList.add('flash-down'); midEl.className = 'rate-price neg'; }
+    }
+    prevPrices[pair] = r;
+  });
+
+  // Rebuild grid cleanly
+  const pairs = Object.keys(rates);
+  if (grid.children.length !== pairs.length) {
+    grid.innerHTML = '';
+    pairs.forEach(pair => {
+      const r = rates[pair];
+      const row = document.createElement('div');
+      row.className = 'rate-row';
+      row.setAttribute('data-pair', pair);
+      const pips = r.spread_pips.toFixed(1);
+      row.innerHTML = `<span class="rate-pair">${pair}</span>
+        <span style="text-align:right">
+          <div class="rate-price" style="font-family:var(--font)">${r.mid.toFixed(pair.includes('JPY') ? 3 : 5)}</div>
+          <div class="rate-spread">${pips} pip</div>
+        </span>`;
+      grid.appendChild(row);
+    });
+  } else {
+    pairs.forEach(pair => {
+      const r = rates[pair];
+      const row = grid.querySelector(`[data-pair="${pair}"]`);
+      if (!row) return;
+      const prev = prevPrices[pair];
+      const midEl = row.querySelector('.rate-price');
+      if (midEl) {
+        const newMid = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
+        if (prev && r.mid !== prev.mid) {
+          midEl.className = 'rate-price ' + (r.mid > prev.mid ? 'pos' : 'neg');
+          row.classList.remove('flash-up', 'flash-down');
+          void row.offsetWidth;
+          row.classList.add(r.mid > prev.mid ? 'flash-up' : 'flash-down');
+        }
+        midEl.textContent = newMid;
+      }
+      prevPrices[pair] = r;
+    });
+  }
+}
+
+function updateMetrics(p) {
+  $('m-balance').textContent = fmtUSD(p.balance);
+  $('m-equity').textContent = fmtUSD(p.equity);
+  $('m-unrealised').textContent = `Unrealised: ${pnlSign(p.unrealised_pnl)}${fmtUSD(p.unrealised_pnl)}`;
+  $('m-unrealised').className = 'metric-sub ' + pnlClass(p.unrealised_pnl);
+
+  const dpEl = $('m-daily-pnl');
+  dpEl.textContent = `${pnlSign(p.daily_pnl)}${fmtUSD(p.daily_pnl)}`;
+  dpEl.className = 'metric-value ' + pnlClass(p.daily_pnl);
+
+  $('m-positions').textContent = p.open_positions;
+
+  // Update equity chart
+  equityData.push({ equity: p.equity, ts: Date.now() });
+  if (equityData.length > MAX_CHART_POINTS) equityData.shift();
+  drawChart();
+}
+
+function updateAgentBadge(agent) {
+  const el = $('m-agent-status');
+  let statusText = agent.running ? '● Running' : '○ Stopped';
+  if (agent.running && agent.market_open === false) statusText = '⏸ Market closed';
+  el.textContent = `Agent: ${statusText} (cycle ${agent.cycle})`;
+  el.className = 'metric-sub ' + (agent.running && agent.market_open !== false ? 'pos' : 'neu');
+  $('agent-mode-badge').textContent = agent.mode === 'ai' ? 'AI' : 'DEMO';
+}
+
+// ── Data fetching ─────────────────────────────────────────────────────────────
+let _tradingMode = 'paper';
+
+async function fetchStatus() {
+  try {
+    const r = await apiFetch('/api/status');
+    const d = await r.json();
+    const badge = $('mode-badge');
+    _tradingMode = (d.trading_mode || 'paper').toLowerCase();
+    badge.textContent = _tradingMode.toUpperCase();
+    badge.className = 'badge' + (_tradingMode === 'oanda' ? ' oanda' : '');
+    if (_tradingMode === 'oanda') fetchOandaBalance();
+  } catch (_) {}
+}
+
+async function fetchOandaBalance() {
+  try {
+    const r = await apiFetch('/api/oanda/account');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('m-balance').textContent = fmtUSD(d.balance);
+    $('m-equity').textContent = fmtUSD(d.nav);
+    const unreal = d.unrealized_pl || 0;
+    $('m-unrealised').textContent = `Unrealised: ${pnlSign(unreal)}${fmtUSD(unreal)}`;
+    $('m-unrealised').className = 'metric-sub ' + pnlClass(unreal);
+    $('m-balance-label').textContent = `OANDA ${d.environment === 'live' ? 'Live' : 'Practice'} ${d.currency}`;
+  } catch (_) {}
+}
+
+async function fetchPositions() {
+  const r = await apiFetch('/api/positions?status=open');
+  const data = await r.json();
+  const tbody = $('positions-tbody');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No open positions</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(p => {
+    const pnl = p.unrealised_pnl;
+    return `<tr>
+      <td style="color:var(--muted)">${p.id}</td>
+      <td><strong>${p.pair}</strong></td>
+      <td class="dir-${p.direction.toLowerCase()}">${p.direction}</td>
+      <td style="font-family:var(--font)">${p.size.toLocaleString()}</td>
+      <td style="font-family:var(--font)">${p.entry_price.toFixed(p.pair.includes('JPY') ? 3 : 5)}</td>
+      <td style="font-family:var(--font)">${p.current_price.toFixed(p.pair.includes('JPY') ? 3 : 5)}</td>
+      <td style="font-family:var(--font);color:var(--muted)">${p.stop_loss ? p.stop_loss.toFixed(p.pair.includes('JPY') ? 3 : 5) : '—'}</td>
+      <td style="font-family:var(--font);color:var(--muted)">${p.take_profit ? p.take_profit.toFixed(p.pair.includes('JPY') ? 3 : 5) : '—'}</td>
+      <td class="${pnlClass(pnl)}" style="font-family:var(--font)">${pnlSign(pnl)}${fmt(pnl)}</td>
+      <td style="color:var(--muted)">${relTime(p.opened_at)}</td>
+      <td><button class="btn-close" onclick="closePos(${p.id})">Close</button></td>
+    </tr>`;
+  }).join('');
+}
+
+let _lastTrades = [];
+
+function copyTradeHistory() {
+  if (!_lastTrades.length) return;
+  const lines = [
+    `Trade History — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    '',
+    'PAIR       ACTION     DIR   SIZE          PRICE         PnL        TIME',
+    '─'.repeat(74),
+  ];
+  _lastTrades.forEach(t => {
+    const isJPY = t.pair.includes('JPY');
+    const price = t.price.toFixed(isJPY ? 3 : 5);
+    const pnl   = t.pnl !== 0 ? (t.pnl > 0 ? '+' : '') + t.pnl.toFixed(2) : '—';
+    const ago   = (() => {
+      const d = (Date.now() - new Date(t.timestamp)) / 1000;
+      if (d < 60) return `${d|0}s ago`;
+      if (d < 3600) return `${(d/60)|0}m ago`;
+      return `${(d/3600)|0}h ago`;
+    })();
+    lines.push(
+      `${t.pair.padEnd(10)} ${t.action.padEnd(10)} ${t.direction.padEnd(5)} ${String(t.size.toLocaleString()).padEnd(13)} ${price.padEnd(13)} ${pnl.padEnd(10)} ${ago}`
+    );
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-trades');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+async function fetchTrades() {
+  const r = await apiFetch('/api/trades?limit=30');
+  const data = await r.json();
+  _lastTrades = data;
+  const tbody = $('trades-tbody');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No trades yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(t => {
+    const isJPY = t.pair.includes('JPY');
+    const actionColor = t.action === 'OPEN' ? 'var(--accent)' : t.action === 'TP_HIT' ? 'var(--green)' : t.action === 'SL_HIT' ? 'var(--red)' : 'var(--muted)';
+    return `<tr>
+      <td><strong>${t.pair}</strong></td>
+      <td style="color:${actionColor}">${t.action}</td>
+      <td class="dir-${t.direction.toLowerCase()}">${t.direction}</td>
+      <td style="font-family:var(--font)">${t.size.toLocaleString()}</td>
+      <td style="font-family:var(--font)">${t.price.toFixed(isJPY ? 3 : 5)}</td>
+      <td class="${pnlClass(t.pnl)}" style="font-family:var(--font)">${t.pnl !== 0 ? pnlSign(t.pnl) + fmt(t.pnl) : '—'}</td>
+      <td style="color:var(--muted)">${relTime(t.timestamp)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function copyDecision(idx) {
+  const d = _lastDecisions[idx];
+  if (!d) return;
+  let actions = [];
+  try { actions = JSON.parse(d.actions_taken || '[]'); } catch(e) {}
+  const ts = new Date(d.timestamp).toUTCString().slice(0, 25) + ' UTC';
+  const tok = d.input_tokens + d.output_tokens;
+  const lines = [
+    `Cycle #${d.cycle} — ${ts} — ${tok} tokens`,
+    '',
+  ];
+  if (actions.length) {
+    lines.push('Actions:', ...actions.map(a => `  • ${a}`), '');
+  }
+  lines.push(d.reasoning || d.market_summary || 'No reasoning logged');
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = document.querySelector(`[data-copy="${idx}"]`);
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastDecisions = [];
+
+async function fetchDecisions() {
+  const r = await apiFetch('/api/agent/decisions?limit=10');
+  const data = await r.json();
+  _lastDecisions = data;
+  const log = $('decision-log');
+  if (!data.length) {
+    log.innerHTML = '<div class="empty-state">No decisions yet</div>';
+    return;
+  }
+  log.innerHTML = data.map((d, idx) => {
+    let actions = [];
+    try { actions = JSON.parse(d.actions_taken || '[]'); } catch(e) {}
+    const actionTags = actions.slice(0, 5).map(a => {
+      const short = a.length > 40 ? a.substring(0, 40) + '…' : a;
+      return `<span class="action-tag">${short}</span>`;
+    }).join('');
+    return `<div class="decision-item">
+      <div class="decision-header">
+        <span class="decision-cycle">Cycle #${d.cycle}</span>
+        <span class="decision-time">${relTime(d.timestamp)} · ${d.input_tokens + d.output_tokens} tok</span>
+        <button class="decision-copy" data-copy="${idx}" onclick="copyDecision(${idx})">Copy</button>
+      </div>
+      ${actions.length ? `<div class="decision-actions">${actionTags}</div>` : ''}
+      <div class="decision-reasoning">${d.reasoning || d.market_summary || 'No reasoning logged'}</div>
+    </div>`;
+  }).join('');
+}
+
+async function fetchPortfolioHistory() {
+  const r = await apiFetch('/api/portfolio/history?limit=200');
+  const data = await r.json();
+  if (data.length) {
+    equityData = data.map(d => ({ equity: d.equity, ts: new Date(d.timestamp).getTime() }));
+    drawChart();
+  }
+}
+
+async function fetchTotalPnL() {
+  const oandaMode = _tradingMode === 'oanda';
+  const url = oandaMode ? '/api/portfolio/alltime?oanda_only=true' : '/api/portfolio/alltime';
+  const r = await apiFetch(url);
+  const p = await r.json();
+  const pnl = p.total_pnl ?? 0;
+  const wr  = p.win_rate_pct ?? 0;
+  const cnt = p.trade_count ?? 0;
+  const label = oandaMode ? `OANDA (${cnt} trades)` : 'All-time';
+  $('m-total-pnl').textContent = `${label}: ${pnlSign(pnl)}${fmtUSD(pnl)} (${wr}% W)`;
+  $('m-total-pnl').className = 'metric-sub ' + pnlClass(pnl);
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+async function closePos(id) {
+  if (!confirm(`Close position #${id}?`)) return;
+  await apiFetch(`/api/positions/${id}`, { method: 'DELETE' });
+  fetchPositions(); fetchTrades();
+}
+
+$('btn-run-once').onclick = async () => {
+  const btn = $('btn-run-once');
+  btn.disabled = true;
+  btn.textContent = 'Starting…';
+  try {
+    await apiFetch('/api/agent/run-once', { method: 'POST' });
+    btn.textContent = 'Running (check in ~30s)';
+    // Poll for new decision every 10s for up to 3 minutes
+    let polls = 0;
+    const poll = setInterval(async () => {
+      await fetchDecisions();
+      polls++;
+      if (polls >= 18) { clearInterval(poll); btn.disabled = false; btn.textContent = 'Run Now'; }
+    }, 10_000);
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Run Now';
+  }
+};
+$('btn-start-agent').onclick = async () => {
+  await apiFetch('/api/agent/start', { method: 'POST' });
+};
+$('btn-stop-agent').onclick = async () => {
+  await apiFetch('/api/agent/stop', { method: 'POST' });
+};
+
+// ── DHJ Forecast Accuracy ────────────────────────────────────────────────────
+let _lastForecastData = null;
+
+function copyForecastAccuracy() {
+  if (!_lastForecastData) return;
+  const data = _lastForecastData;
+  const dhjAcc = data.direction_accuracy != null ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
+  const bsAcc  = data.bs_direction_accuracy != null ? `${(data.bs_direction_accuracy * 100).toFixed(1)}%` : '—';
+  const d = data.disagreements || {};
+  const lines = [
+    `DHJ Model Accuracy — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    `DHJ: ${dhjAcc} | Black-Scholes: ${bsAcc}`,
+    `${data.evaluated} evaluated · ${data.pending} pending`,
+  ];
+  if (d.total > 0) {
+    lines.push(`When they disagree (${d.total}): DHJ✓ ${d.dhj_right_bs_wrong} · BS✓ ${d.bs_right_dhj_wrong} · both✓ ${d.both_right} · both✗ ${d.both_wrong}`);
+  }
+  const sigParts = Object.entries(data.by_signal || {})
+    .filter(([, v]) => v.evaluated > 0)
+    .map(([sig, v]) => {
+      const a = v.accuracy != null ? `${(v.accuracy * 100).toFixed(0)}%` : '—';
+      return `${sig}: ${a} (${v.evaluated})`;
+    }).join(' · ');
+  if (sigParts) lines.push(sigParts);
+
+  if (data.recent && data.recent.length) {
+    lines.push('');
+    lines.push('PAIR       SIGNAL       DHJ  BS   ACTUAL        DHJ  BS   P(↑)');
+    lines.push('─'.repeat(66));
+    data.recent.forEach(f => {
+      const dDir = f.expected_direction === 'UP' ? '↑' : '↓';
+      const bDir = f.bs_expected_direction ? (f.bs_expected_direction === 'UP' ? '↑' : '↓') : '—';
+      const aDir = f.actual_move_pips > 0 ? '↑' : f.actual_move_pips < 0 ? '↓' : '→';
+      const dhj  = f.direction_correct ? '✓' : '✗';
+      const bs   = f.bs_direction_correct == null ? '—' : f.bs_direction_correct ? '✓' : '✗';
+      const sig  = f.signal.replace('_', ' ');
+      lines.push(
+        `${f.pair.padEnd(10)} ${sig.padEnd(13)} ${dDir}    ${bDir}    ${aDir} ${Math.abs(f.actual_move_pips || 0).toFixed(1)}p`.padEnd(45) +
+        `${dhj}    ${bs}    ${(f.prob_above_spot * 100).toFixed(1)}%`
+      );
+    });
+  }
+
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-forecast');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+async function fetchForecastAccuracy() {
+  try {
+    const r = await apiFetch('/api/forecast/accuracy');
+    if (!r.ok) return;
+    const data = await r.json();
+    _lastForecastData = data;
+
+    const dhjAcc = data.direction_accuracy != null ? `${(data.direction_accuracy * 100).toFixed(1)}%` : '—';
+    const bsAcc  = data.bs_direction_accuracy != null ? `${(data.bs_direction_accuracy * 100).toFixed(1)}%` : '—';
+    const dhjColor = data.direction_accuracy >= 0.55 ? 'var(--green)'
+      : data.direction_accuracy <= 0.45 ? 'var(--red)' : 'var(--text)';
+    const bsColor  = data.bs_direction_accuracy >= 0.55 ? 'var(--green)'
+      : data.bs_direction_accuracy <= 0.45 ? 'var(--red)' : 'var(--text)';
+    const d = data.disagreements || {};
+    const disagreeHtml = d.total > 0
+      ? `<span style="color:var(--muted)">When they disagree (${d.total}): </span>
+         <span style="color:var(--green)">DHJ✓ ${d.dhj_right_bs_wrong}</span> ·
+         <span style="color:var(--red)">BS✓ ${d.bs_right_dhj_wrong}</span> ·
+         <span style="color:var(--muted)">both✓ ${d.both_right} · both✗ ${d.both_wrong}</span>`
+      : `<span style="color:var(--muted)">Disagreement data accumulates after first evaluations</span>`;
+    const sigParts = Object.entries(data.by_signal)
+      .filter(([, v]) => v.evaluated > 0)
+      .map(([sig, v]) => {
+        const c = sig.includes('BULLISH') ? 'var(--green)'
+          : sig.includes('BEARISH') ? 'var(--red)' : 'var(--muted)';
+        const a = v.accuracy != null ? `${(v.accuracy * 100).toFixed(0)}%` : '—';
+        return `<span style="color:${c}">${sig.replace('_', ' ')}: ${a} (${v.evaluated})</span>`;
+      }).join(' · ');
+
+    $('forecast-summary').innerHTML = `
+      <div style="display:flex;gap:24px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px">
+        <span><b style="font-size:18px;color:${dhjColor}">${dhjAcc}</b>
+          <span style="color:var(--muted)"> DHJ</span></span>
+        <span><b style="font-size:18px;color:${bsColor}">${bsAcc}</b>
+          <span style="color:var(--muted)"> Black-Scholes</span></span>
+        <span style="color:var(--muted);font-size:11px">${data.evaluated} evaluated · ${data.pending} pending</span>
+      </div>
+      <div style="font-size:11px;margin-bottom:4px">${disagreeHtml}</div>
+      ${sigParts ? `<div style="font-size:11px;color:var(--muted);line-height:1.8">${sigParts}</div>` : ''}`;
+
+    const tbody = $('forecast-tbody');
+    if (!data.recent.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">First results appear 1 day after first forecast</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.recent.map(f => {
+      const sc   = f.signal.includes('BULLISH') ? 'var(--green)'
+        : f.signal.includes('BEARISH') ? 'var(--red)' : 'var(--muted)';
+      const dDir = f.expected_direction === 'UP' ? '↑' : '↓';
+      const bDir = f.bs_expected_direction ? (f.bs_expected_direction === 'UP' ? '↑' : '↓') : '—';
+      const aDir = f.actual_move_pips > 0 ? '↑' : f.actual_move_pips < 0 ? '↓' : '→';
+      const dhjR = f.direction_correct;
+      const bsR  = f.bs_direction_correct;
+      const conflict = f.bs_expected_direction && f.bs_expected_direction !== f.expected_direction;
+      return `<tr${conflict ? ' style="background:rgba(188,140,255,0.05)"' : ''}>
+        <td><strong>${f.pair}</strong></td>
+        <td style="color:${sc};font-size:10px">${f.signal.replace('_', ' ')}</td>
+        <td style="font-family:var(--font);color:${dDir==='↑'?'var(--green)':'var(--red)'}">${dDir}</td>
+        <td style="font-family:var(--font);color:${bDir==='↑'?'var(--green)':bDir==='↓'?'var(--red)':'var(--muted)'}">${bDir}</td>
+        <td style="font-family:var(--font)">${aDir} ${Math.abs(f.actual_move_pips || 0).toFixed(1)}p</td>
+        <td style="color:${dhjR?'var(--green)':'var(--red)'};font-weight:700">${dhjR?'✓':'✗'}</td>
+        <td style="color:${bsR==null?'var(--muted)':bsR?'var(--green)':'var(--red)'};font-weight:700">${bsR==null?'—':bsR?'✓':'✗'}</td>
+        <td style="color:var(--muted)">${(f.prob_above_spot * 100).toFixed(1)}%</td>
+        <td style="color:var(--muted);font-size:10px">${relTime(f.created_at)}</td>
+      </tr>`;
+    }).join('');
+  } catch (_) {}
+}
+
+// ── Clock ────────────────────────────────────────────────────────────────────
+function updateClock() {
+  $('clock').textContent = new Date().toUTCString().slice(0, 25) + ' UTC';
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+(async () => {
+  await Promise.all([
+    fetchStatus(),
+    fetchPortfolioHistory(),
+    fetchPositions(),
+    fetchTrades(),
+    fetchDecisions(),
+    fetchTotalPnL(),
+    fetchForecastAccuracy(),
+  ]);
+  // Refresh every 10s
+  setInterval(() => { fetchPositions(); fetchTrades(); fetchDecisions(); fetchTotalPnL(); }, 10_000);
+  // Refresh OANDA balance every 15s
+  setInterval(() => { if (_tradingMode === 'oanda') fetchOandaBalance(); }, 15_000);
+  // Refresh mode badge every 60s (rarely changes)
+  setInterval(fetchStatus, 60_000);
+  // Refresh forecast accuracy every 5 minutes
+  setInterval(fetchForecastAccuracy, 5 * 60_000);
+})();
+</script>
+</body>
+</html>

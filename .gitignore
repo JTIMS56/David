@@ -1,0 +1,22 @@
+*.pyc
+__pycache__/
+*.db
+.env
+.env.local
+
+# C++ build artifacts
+dirac_engine/build/
+*.so
+*.a
+*.o
+
+# SSL certs (never commit private keys)
+nginx/ssl/
+
+# Test/coverage
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Claude Code internal
+.claude/
