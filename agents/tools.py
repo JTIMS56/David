@@ -431,19 +431,30 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         "pair": pair,
         "spot": round(spot, 6),
         "horizon_days": horizon_days,
+        # ── Directional signal ────────────────────────────────────────────────
+        # signal and expected_direction are both derived from Q₅ (chiral_charge),
+        # NOT from mean_dhj.  At 1-day horizons with near-zero carry the DHJ mean
+        # barely moves from spot (±1-2 pip MC noise), so mean_dhj direction is
+        # uninformative noise.  Q₅ is seeded from RSI momentum and is the true
+        # directional predictor.
+        "signal": signal,
+        "expected_direction": "UP" if q5 > 0 else "DOWN",
+        "chiral_charge": round(q5, 4),
+        "prob_above_spot": prob_up,
+        # ── Model drift (carry-adjusted expected price drift, NOT a magnitude bet) ──
+        # At 1-day horizon this is typically ±1-3 pips regardless of actual move.
+        # Use it only for model diagnostics, not for sizing or direction decisions.
+        "model_drift_pips": expected_move_pips,
+        # ── Volatility & tail risk ─────────────────────────────────────────────
+        "dhj_higher_tail_risk": result.call_dhj > result.call_bs,
+        "implied_vol_annualized": round(result.avg_variance ** 0.5, 4),
+        # ── Reference prices (for diagnostic comparison) ───────────────────────
         "dhj_expected_price": round(result.mean_dhj, 6),
         "bs_expected_price": round(result.mean_bs, 6),
-        "expected_move_pips": expected_move_pips,
-        "expected_direction": "UP" if result.mean_dhj > spot else "DOWN",
-        "prob_above_spot": prob_up,
-        "chiral_charge": round(q5, 4),
-        "delta_cp": round(delta_cp, 4),
-        "rsi_at_forecast": round(ind["rsi"], 1) if ind else None,
-        "implied_vol_annualized": round(result.avg_variance ** 0.5, 4),
         "dhj_call_price": round(result.call_dhj, 6),
         "bs_call_price": round(result.call_bs, 6),
-        "dhj_higher_tail_risk": result.call_dhj > result.call_bs,
-        "signal": signal,
+        "delta_cp": round(delta_cp, 4),
+        "rsi_at_forecast": round(ind["rsi"], 1) if ind else None,
     }
 
     asyncio.create_task(_log_forecast_to_db(

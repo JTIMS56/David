@@ -154,10 +154,15 @@ jump risk that Black-Scholes ignores.
 
 Key outputs:
 - **signal**: STRONG_BULLISH / MILD_BULLISH / NEUTRAL / MILD_BEARISH / STRONG_BEARISH
-  Driven by **chiral_charge** (Q₅), which is seeded from the current RSI momentum bias.
-- **chiral_charge**: positive = bullish bias, negative = bearish. Range ±0.5.
+  Driven by **chiral_charge** (Q₅), seeded from RSI momentum. This IS the directional call.
+- **expected_direction**: UP / DOWN — derived from the same Q₅ as signal. Always agrees with
+  signal (BULLISH→UP, BEARISH→DOWN). Use this to confirm trade direction.
+- **chiral_charge**: positive = bullish, negative = bearish. Range ±0.5.
   Thresholds: |Q₅| > 0.05 → MILD; |Q₅| > 0.15 → STRONG (with prob confirmation).
   Approximate RSI mapping: RSI 55 ≈ Q₅ +0.05; RSI 65 ≈ Q₅ +0.15; RSI 70 ≈ Q₅ +0.20.
+- **model_drift_pips**: carry-adjusted expected drift at this horizon — typically ±1-3 pips at
+  1-day, regardless of actual volatility. Do NOT use this as a magnitude prediction or to
+  discount a clear signal. Ignore it unless it exceeds 10 pips.
 - **dhj_higher_tail_risk**: true = fatter tails than Black-Scholes → market is jumpier than usual
 - **prob_above_spot**: directional probability (informative but near 0.50 at short horizons)
 
