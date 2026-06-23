@@ -665,6 +665,14 @@ async def dhj_predict_endpoint(
 
 # ── Forecast Accuracy ────────────────────────────────────────────────────────
 
+# Forecasts placed while market_data was in simulation mode have spot_price from
+# PAIR_CONFIG base values (e.g. USD/JPY 149.50) but are evaluated against real
+# OANDA prices (~161.7), inflating actual_move_pips by 1,000-1,200+ pips.
+# Any genuine 1-day FX move >200 pips is extremely rare; this threshold filters
+# simulation artifacts while keeping real extreme moves.
+_CLEAN_MAX_PIPS = 200
+
+
 @router.get("/forecast/accuracy")
 async def forecast_accuracy():
     """DHJ direction-forecast accuracy: hit rate by signal type, with recent outcomes."""
@@ -677,10 +685,18 @@ async def forecast_accuracy():
 
     evaluated = [l for l in logs if l.evaluated_at is not None]
     pending   = [l for l in logs if l.evaluated_at is None]
-    correct   = [l for l in evaluated if l.direction_correct]
 
-    # BS accuracy (only rows that have BS data, i.e. logged after the BS columns were added)
-    bs_ev      = [l for l in evaluated if l.bs_direction_correct is not None]
+    # Clean = evaluated AND actual move within realistic 1-day range (no sim artefacts)
+    clean     = [
+        l for l in evaluated
+        if l.actual_move_pips is not None and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+    ]
+    artifacts = len(evaluated) - len(clean)
+
+    correct   = [l for l in clean if l.direction_correct]
+
+    # BS accuracy — clean rows only
+    bs_ev      = [l for l in clean if l.bs_direction_correct is not None]
     bs_correct = [l for l in bs_ev if l.bs_direction_correct]
     bs_accuracy = round(len(bs_correct) / len(bs_ev), 3) if bs_ev else None
 
@@ -694,9 +710,9 @@ async def forecast_accuracy():
 
     by_signal: dict = {}
     for sig in ["STRONG_BULLISH", "MILD_BULLISH", "NEUTRAL", "MILD_BEARISH", "STRONG_BEARISH"]:
-        sig_all = [l for l in logs      if l.signal == sig]
-        sig_ev  = [l for l in evaluated if l.signal == sig]
-        sig_ok  = [l for l in sig_ev    if l.direction_correct]
+        sig_all = [l for l in logs  if l.signal == sig]
+        sig_ev  = [l for l in clean if l.signal == sig]
+        sig_ok  = [l for l in sig_ev if l.direction_correct]
         by_signal[sig] = {
             "total":     len(sig_all),
             "evaluated": len(sig_ev),
@@ -708,8 +724,10 @@ async def forecast_accuracy():
     return {
         "total_forecasts":      len(logs),
         "evaluated":            len(evaluated),
+        "clean_evaluated":      len(clean),
+        "simulation_artifacts": artifacts,
         "pending":              len(pending),
-        "direction_accuracy":   round(len(correct) / len(evaluated), 3) if evaluated else None,
+        "direction_accuracy":   round(len(correct) / len(clean), 3) if clean else None,
         "bs_direction_accuracy": bs_accuracy,
         "bs_evaluated":         len(bs_ev),
         "disagreements": {
@@ -732,6 +750,9 @@ async def forecast_accuracy():
                 "bs_expected_direction": l.bs_expected_direction,
                 "bs_direction_correct": l.bs_direction_correct,
                 "prob_above_spot":      l.prob_above_spot,
+                "is_simulation_artifact": (
+                    l.actual_move_pips is not None and abs(l.actual_move_pips) > _CLEAN_MAX_PIPS
+                ),
                 "created_at":           l.created_at.isoformat() + "Z",
                 "evaluated_at":         l.evaluated_at.isoformat() + "Z" if l.evaluated_at else None,
                 "horizon_days":         l.horizon_days,
