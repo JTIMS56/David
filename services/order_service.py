@@ -22,7 +22,7 @@ from config import settings
 from database import AsyncSessionLocal
 from models.orm import AuditLog, Position, Trade
 from services.market_data import market_data, PAIR_CONFIG
-from services.portfolio_service import portfolio_service
+from services.portfolio_service import portfolio_service, _USD_BASE_PAIRS
 from services.risk_gate import risk_gate
 
 logger = logging.getLogger("david.order_service")
@@ -388,9 +388,13 @@ class OrderService:
             # ── Paper PnL calculation (used when no OANDA fill, or OANDA close failed) ─
             if pnl == 0.0:
                 if pos.direction == "BUY":
-                    pnl = (close_price - pos.entry_price) * pos.size
+                    raw_pnl = (close_price - pos.entry_price) * pos.size
                 else:
-                    pnl = (pos.entry_price - close_price) * pos.size
+                    raw_pnl = (pos.entry_price - close_price) * pos.size
+                # USD-base pairs: P&L is in counter currency; divide to get USD.
+                if pos.pair in _USD_BASE_PAIRS and close_price > 0:
+                    raw_pnl /= close_price
+                pnl = raw_pnl
 
             pos.status        = "CLOSED"
             pos.close_price   = close_price

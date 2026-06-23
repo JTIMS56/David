@@ -15,6 +15,11 @@ from config import settings
 from database import AsyncSessionLocal
 from models.orm import Position, PortfolioSnapshot
 
+# For USD-base pairs (USD is the base/left currency), 1 unit = $1 USD and P&L
+# is denominated in the counter currency (JPY, CAD, CHF). Divide by the rate to
+# convert to USD.  For all other pairs the counter currency IS USD already.
+_USD_BASE_PAIRS = frozenset({"USD/JPY", "USD/CAD", "USD/CHF"})
+
 
 class PortfolioService:
     def __init__(self) -> None:
@@ -49,10 +54,15 @@ class PortfolioService:
                     continue
                 current = bar.bid if pos.direction == "BUY" else bar.ask
                 pos.current_price = current
-                if pos.direction == "BUY":
-                    pos.unrealised_pnl = (current - pos.entry_price) * pos.size
-                else:
-                    pos.unrealised_pnl = (pos.entry_price - current) * pos.size
+                raw = (
+                    (current - pos.entry_price) * pos.size
+                    if pos.direction == "BUY"
+                    else (pos.entry_price - current) * pos.size
+                )
+                # USD-base pairs: P&L is in counter currency; divide to get USD.
+                if pos.pair in _USD_BASE_PAIRS and current > 0:
+                    raw /= current
+                pos.unrealised_pnl = raw
             await db.commit()
 
     # ── State snapshot ────────────────────────────────────────────────────────
@@ -63,7 +73,12 @@ class PortfolioService:
             positions = result.scalars().all()
 
         unrealised = sum(p.unrealised_pnl for p in positions)
-        total_notional = sum(p.size * p.current_price for p in positions)
+        # USD-base pairs: 1 unit = $1 USD, so notional = size.
+        # All others: size is in base currency units, price is USD/base.
+        total_notional = sum(
+            p.size if p.pair in _USD_BASE_PAIRS else p.size * p.current_price
+            for p in positions
+        )
         equity = self._balance + unrealised
         daily_pnl = self._balance - self._start_of_day_balance + unrealised
         drawdown = (self._peak_balance - equity) / self._peak_balance if self._peak_balance > 0 else 0.0
