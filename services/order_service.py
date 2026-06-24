@@ -217,6 +217,16 @@ class OrderService:
                                     _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f}"
                                 elif take_profit is not None and take_profit >= _fp:
                                     _abort = f"fill {_fp:.5f} at or below SELL take_profit {take_profit:.5f}"
+                            # Minimum stop distance from fill — favorable slippage can
+                            # leave the SL dangerously close even when R:R looks fine.
+                            if _abort is None and stop_loss is not None:
+                                _stop_pips_actual = abs(_fp - stop_loss) / _pip
+                                if _stop_pips_actual < settings.min_stop_pips:
+                                    _abort = (
+                                        f"post-fill stop {_stop_pips_actual:.1f}p below minimum "
+                                        f"{settings.min_stop_pips:.0f}p (fill {_fp:.5f}, "
+                                        f"stop {stop_loss:.5f}) — slippage eroded stop distance"
+                                    )
                             # R:R floor — slippage can widen stop relative to reward
                             if _abort is None and take_profit is not None and stop_loss is not None:
                                 _risk = abs(_fp - stop_loss) / _pip
