@@ -238,15 +238,16 @@ class OrderService:
                                         f"(fill {_fp:.5f}, stop {stop_loss:.5f} [{_risk:.1f}p], "
                                         f"tp {take_profit:.5f} [{_reward:.1f}p])"
                                     )
-                            if _abort and oanda_trade_id:
+                            if _abort:
                                 logger.error(
                                     "Post-fill abort [%s %s]: %s — closing trade immediately",
                                     direction, pair, _abort,
                                 )
-                                try:
-                                    await oanda_client.close_trade(oanda_trade_id)
-                                except Exception as _ce:
-                                    logger.error("Failed to close aborted OANDA trade: %s", _ce)
+                                if oanda_trade_id:
+                                    try:
+                                        await oanda_client.close_trade(oanda_trade_id)
+                                    except Exception as _ce:
+                                        logger.error("Failed to close aborted OANDA trade: %s", _ce)
                                 await _write_audit(
                                     source=source, event_type="ORDER_REJECT",
                                     pair=pair, direction=direction, size=size,
@@ -461,10 +462,27 @@ class OrderService:
                     triggered_action = "SL_HIT"
 
             if pos.take_profit is not None and triggered_action is None:
-                if pos.direction == "BUY"  and current >= pos.take_profit:
-                    triggered_action = "TP_HIT"
+                if pos.direction == "BUY" and current >= pos.take_profit:
+                    if pos.take_profit > pos.entry_price:
+                        triggered_action = "TP_HIT"
+                    else:
+                        # TP stored below entry (inverted) — treat as SL to close the loss
+                        logger.error(
+                            "Inverted TP detected [pos %d %s %s]: tp=%.5f <= entry=%.5f — "
+                            "closing as SL_HIT",
+                            pos.id, pos.direction, pos.pair, pos.take_profit, pos.entry_price,
+                        )
+                        triggered_action = "SL_HIT"
                 elif pos.direction == "SELL" and current <= pos.take_profit:
-                    triggered_action = "TP_HIT"
+                    if pos.take_profit < pos.entry_price:
+                        triggered_action = "TP_HIT"
+                    else:
+                        logger.error(
+                            "Inverted TP detected [pos %d %s %s]: tp=%.5f >= entry=%.5f — "
+                            "closing as SL_HIT",
+                            pos.id, pos.direction, pos.pair, pos.take_profit, pos.entry_price,
+                        )
+                        triggered_action = "SL_HIT"
 
             if triggered_action:
                 await self.close_position(
