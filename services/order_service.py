@@ -255,16 +255,26 @@ class OrderService:
                                         # Re-anchor: preserve original pip distances, apply to fill price
                                         _new_sl = (_fp - _stop_dist) if direction == "BUY" else (_fp + _stop_dist)
                                         _new_tp = ((_fp + _tp_dist) if direction == "BUY" else (_fp - _tp_dist)) if _tp_dist is not None else take_profit
-                                        logger.info(
-                                            "Post-fill re-anchor [%s %s]: quoted=%.5f fill=%.5f "
-                                            "slip=%.1fp — sl %.5f→%.5f tp %s→%s",
-                                            direction, pair, _quoted_entry, _fp, _slip_pips,
-                                            stop_loss, _new_sl,
-                                            f"{take_profit:.5f}" if take_profit is not None else "None",
-                                            f"{_new_tp:.5f}" if _new_tp is not None else "None",
-                                        )
-                                        stop_loss = _new_sl
-                                        take_profit = _new_tp
+                                        # Abort if the re-anchored stop is still below minimum
+                                        # (original setup was inherently too tight regardless of slippage)
+                                        _new_stop_pips = _stop_dist / _pip
+                                        if _new_stop_pips < settings.min_stop_pips:
+                                            _abort = (
+                                                f"re-anchored stop {_new_stop_pips:.1f}p still below "
+                                                f"minimum {settings.min_stop_pips:.0f}p — original "
+                                                f"setup too tight to salvage"
+                                            )
+                                        else:
+                                            logger.info(
+                                                "Post-fill re-anchor [%s %s]: quoted=%.5f fill=%.5f "
+                                                "slip=%.1fp — sl %.5f→%.5f tp %s→%s",
+                                                direction, pair, _quoted_entry, _fp, _slip_pips,
+                                                stop_loss, _new_sl,
+                                                f"{take_profit:.5f}" if take_profit is not None else "None",
+                                                f"{_new_tp:.5f}" if _new_tp is not None else "None",
+                                            )
+                                            stop_loss = _new_sl
+                                            take_profit = _new_tp
 
                             if _abort:
                                 logger.error(
