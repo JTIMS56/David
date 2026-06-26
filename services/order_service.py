@@ -191,53 +191,81 @@ class OrderService:
                     if fill:
                         oanda_trade_id = fill.get("tradeOpened", {}).get("tradeID")
                         fill_price = fill.get("price")
+                        _quoted_entry = entry_price  # preserve original quoted price for re-anchor
                         if fill_price:
                             entry_price = float(fill_price)
                         logger.info(
                             "OANDA order filled: trade_id=%s price=%s",
                             oanda_trade_id, fill_price,
                         )
-                        # Post-fill SL/TP sanity check: the fill can differ from the
-                        # market data price used for gate validation.  If the fill
-                        # price moved past TP or put SL on the wrong side, abort now.
-                        # Also enforce a post-fill R:R floor: if slippage degraded
-                        # the realized R:R below 1.0, the trade is no longer worth
-                        # taking (originally planned at ≥ 1.5).
+                        # Post-fill geometry check with re-anchor fallback.
+                        # Hard-abort only when fill is already past SL (unrecoverable loss).
+                        # For all other violations (fill past TP, stop eroded, R:R < 1.0)
+                        # attempt to re-anchor SL/TP to the actual fill price, preserving
+                        # the original pip distances from the quoted entry.  Abort only if
+                        # slippage exceeds 2× the original stop distance (setup is stale).
                         if fill_price:
                             _fp = float(fill_price)
                             _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
                             _abort: str | None = None
-                            if direction == "BUY":
-                                if stop_loss is not None and stop_loss >= _fp:
-                                    _abort = f"fill {_fp:.5f} at or below BUY stop_loss {stop_loss:.5f}"
-                                elif take_profit is not None and take_profit <= _fp:
-                                    _abort = f"fill {_fp:.5f} at or above BUY take_profit {take_profit:.5f}"
-                            else:
-                                if stop_loss is not None and stop_loss <= _fp:
-                                    _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f}"
-                                elif take_profit is not None and take_profit >= _fp:
-                                    _abort = f"fill {_fp:.5f} at or below SELL take_profit {take_profit:.5f}"
-                            # Minimum stop distance from fill — favorable slippage can
-                            # leave the SL dangerously close even when R:R looks fine.
+
+                            # Hard abort: fill is already past the stop loss
+                            if direction == "BUY" and stop_loss is not None and stop_loss >= _fp:
+                                _abort = f"fill {_fp:.5f} at or below BUY stop_loss {stop_loss:.5f} — unrecoverable"
+                            elif direction == "SELL" and stop_loss is not None and stop_loss <= _fp:
+                                _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f} — unrecoverable"
+
+                            # Soft violations: attempt re-anchor
                             if _abort is None and stop_loss is not None:
+                                _stop_dist = abs(_quoted_entry - stop_loss)
+                                _tp_dist = abs(take_profit - _quoted_entry) if take_profit is not None else None
+                                _slip_pips = abs(_fp - _quoted_entry) / _pip
+                                _needs_reanchor = False
+
+                                # Check if geometry is broken at fill price
+                                if direction == "BUY":
+                                    if take_profit is not None and take_profit <= _fp:
+                                        _needs_reanchor = True
+                                else:
+                                    if take_profit is not None and take_profit >= _fp:
+                                        _needs_reanchor = True
+
+                                # Check if stop eroded below minimum
                                 _stop_pips_actual = abs(_fp - stop_loss) / _pip
                                 if _stop_pips_actual < settings.min_stop_pips:
-                                    _abort = (
-                                        f"post-fill stop {_stop_pips_actual:.1f}p below minimum "
-                                        f"{settings.min_stop_pips:.0f}p (fill {_fp:.5f}, "
-                                        f"stop {stop_loss:.5f}) — slippage eroded stop distance"
-                                    )
-                            # R:R floor — slippage can widen stop relative to reward
-                            if _abort is None and take_profit is not None and stop_loss is not None:
-                                _risk = abs(_fp - stop_loss) / _pip
-                                _reward = abs(take_profit - _fp) / _pip
-                                _rr = _reward / _risk if _risk > 0 else 0.0
-                                if _rr < 1.0:
-                                    _abort = (
-                                        f"post-fill R:R {_rr:.2f} below 1.0 "
-                                        f"(fill {_fp:.5f}, stop {stop_loss:.5f} [{_risk:.1f}p], "
-                                        f"tp {take_profit:.5f} [{_reward:.1f}p])"
-                                    )
+                                    _needs_reanchor = True
+
+                                # Check R:R floor
+                                if take_profit is not None:
+                                    _risk = abs(_fp - stop_loss) / _pip
+                                    _reward = abs(take_profit - _fp) / _pip
+                                    _rr = _reward / _risk if _risk > 0 else 0.0
+                                    if _rr < 1.0:
+                                        _needs_reanchor = True
+
+                                if _needs_reanchor:
+                                    # Abort if slippage is more than 2× the original stop distance
+                                    # (the setup is too stale to salvage)
+                                    if _stop_dist > 0 and _slip_pips > (_stop_dist / _pip) * 2:
+                                        _abort = (
+                                            f"slippage {_slip_pips:.1f}p exceeds 2× stop distance "
+                                            f"{_stop_dist / _pip:.1f}p — setup too stale to re-anchor"
+                                        )
+                                    else:
+                                        # Re-anchor: preserve original pip distances, apply to fill price
+                                        _new_sl = (_fp - _stop_dist) if direction == "BUY" else (_fp + _stop_dist)
+                                        _new_tp = ((_fp + _tp_dist) if direction == "BUY" else (_fp - _tp_dist)) if _tp_dist is not None else take_profit
+                                        logger.info(
+                                            "Post-fill re-anchor [%s %s]: quoted=%.5f fill=%.5f "
+                                            "slip=%.1fp — sl %.5f→%.5f tp %s→%s",
+                                            direction, pair, _quoted_entry, _fp, _slip_pips,
+                                            stop_loss, _new_sl,
+                                            f"{take_profit:.5f}" if take_profit is not None else "None",
+                                            f"{_new_tp:.5f}" if _new_tp is not None else "None",
+                                        )
+                                        stop_loss = _new_sl
+                                        take_profit = _new_tp
+
                             if _abort:
                                 logger.error(
                                     "Post-fill abort [%s %s]: %s — closing trade immediately",
