@@ -20,6 +20,11 @@ def _normalize_db_url(url: str) -> tuple[str, dict]:
     """
     connect_args: dict = {}
 
+    # SQLite (local/dev) needs no normalization — and urlunparse would mangle
+    # its triple-slash (sqlite:///./x.db -> sqlite:/./x.db), so pass it through.
+    if url.startswith("sqlite"):
+        return url, connect_args
+
     for prefix in ("postgres://", "postgresql://"):
         if url.startswith(prefix):
             url = "postgresql+asyncpg://" + url[len(prefix):]

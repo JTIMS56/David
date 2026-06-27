@@ -492,6 +492,11 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         bs_expected_direction=_bs_direction,
     ))
 
+    # Shadow-log the independent ensemble model on the same spot/horizon for a
+    # clean head-to-head. Never affects trading — comparison only.
+    if settings.ensemble_shadow_enabled:
+        asyncio.create_task(_log_ensemble_shadow(pair, float(spot), float(horizon_days)))
+
     return output
 
 
@@ -505,3 +510,34 @@ async def _log_forecast_to_db(**kwargs) -> None:
             await db.commit()
     except Exception as exc:
         logger.warning("Failed to log forecast: %s", exc)
+
+
+async def _log_ensemble_shadow(pair: str, spot: float, horizon_days: float) -> None:
+    """Compute and persist the ensemble model's shadow prediction for this pair."""
+    try:
+        from database import AsyncSessionLocal
+        from models.orm import EnsembleForecastLog
+        from services.ensemble_model import predict
+
+        fc = predict(pair)
+        if fc is None:
+            return
+        horizon_at = datetime.utcnow() + timedelta(days=horizon_days)
+        async with AsyncSessionLocal() as db:
+            db.add(EnsembleForecastLog(
+                pair=pair,
+                spot_price=spot,
+                horizon_days=horizon_days,
+                horizon_at=horizon_at,
+                direction=fc.direction,
+                net_vote=fc.net_vote,
+                conviction=fc.conviction,
+                high_conviction=fc.high_conviction,
+                vote_trend=fc.votes.get("trend", 0),
+                vote_mean_revert=fc.votes.get("mean_revert", 0),
+                vote_carry=fc.votes.get("carry", 0),
+                vote_usd_strength=fc.votes.get("usd_strength", 0),
+            ))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to log ensemble shadow forecast: %s", exc)

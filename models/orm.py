@@ -152,6 +152,36 @@ class ForecastLog(Base):
     evaluated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class EnsembleForecastLog(Base):
+    """
+    Shadow-mode predictions from the independent ensemble model, logged beside
+    each DHJ forecast (same spot/horizon) for head-to-head out-of-sample
+    comparison. Outcomes are filled by the background evaluator after horizon_at.
+    """
+    __tablename__ = "ensemble_forecast_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+    pair: Mapped[str] = mapped_column(String(10), index=True)
+    spot_price: Mapped[float] = mapped_column(Float)
+    horizon_days: Mapped[float] = mapped_column(Float)
+    horizon_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    # Ensemble prediction
+    direction: Mapped[str] = mapped_column(String(4))        # UP | DOWN | FLAT
+    net_vote: Mapped[int] = mapped_column(Integer)
+    conviction: Mapped[int] = mapped_column(Integer)
+    high_conviction: Mapped[bool] = mapped_column(Boolean, default=False)
+    vote_trend: Mapped[int] = mapped_column(Integer, default=0)
+    vote_mean_revert: Mapped[int] = mapped_column(Integer, default=0)
+    vote_carry: Mapped[int] = mapped_column(Integer, default=0)
+    vote_usd_strength: Mapped[int] = mapped_column(Integer, default=0)
+    # Outcome — filled by background evaluator after horizon_at
+    outcome_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    actual_move_pips: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    direction_correct: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    evaluated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class AuditLog(Base):
     """Immutable record of every order attempt and gate decision."""
     __tablename__ = "audit_log"

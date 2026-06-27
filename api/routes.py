@@ -888,6 +888,74 @@ async def forecast_edge_analysis(
     }
 
 
+@router.get("/forecast/ensemble-accuracy")
+async def ensemble_accuracy():
+    """
+    Head-to-head: the independent ensemble model vs DHJ on the SAME pairs and
+    horizons (shadow mode). Reports overall and high-conviction accuracy plus
+    per-signal vote accuracy, with Wilson lower bounds so we don't promote noise.
+    """
+    from models.orm import EnsembleForecastLog, ForecastLog
+
+    async with AsyncSessionLocal() as db:
+        eres = await db.execute(
+            select(EnsembleForecastLog).order_by(desc(EnsembleForecastLog.created_at)).limit(5000)
+        )
+        elogs = eres.scalars().all()
+        dres = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(5000)
+        )
+        dlogs = dres.scalars().all()
+
+    def acc(rows: list) -> dict:
+        rows = [r for r in rows if r.direction_correct is not None
+                and r.actual_move_pips is not None and abs(r.actual_move_pips) <= _CLEAN_MAX_PIPS]
+        n = len(rows)
+        ok = sum(1 for r in rows if r.direction_correct)
+        return {
+            "n": n,
+            "accuracy": round(ok / n, 3) if n else None,
+            "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+        }
+
+    e_clean = [l for l in elogs if l.evaluated_at is not None]
+    high_conv = [l for l in e_clean if l.high_conviction]
+
+    # Per-signal standalone accuracy: does each vote, alone, beat coin flip?
+    per_signal = {}
+    for name, attr in [("trend", "vote_trend"), ("mean_revert", "vote_mean_revert"),
+                       ("carry", "vote_carry"), ("usd_strength", "vote_usd_strength")]:
+        voted = []
+        for l in e_clean:
+            v = getattr(l, attr)
+            if v == 0 or l.actual_move_pips is None or abs(l.actual_move_pips) > _CLEAN_MAX_PIPS:
+                continue
+            correct = (v > 0 and l.actual_move_pips > 0) or (v < 0 and l.actual_move_pips < 0)
+            # reuse a tiny shim object isn't needed — count inline
+            voted.append(correct)
+        n = len(voted); ok = sum(1 for c in voted if c)
+        per_signal[name] = {
+            "n": n,
+            "accuracy": round(ok / n, 3) if n else None,
+            "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+        }
+
+    return {
+        "ensemble": {
+            "overall":          acc(e_clean),
+            "high_conviction":  acc(high_conv),
+            "per_signal_vote":  per_signal,
+        },
+        "dhj": {
+            "overall": acc(dlogs),
+        },
+        "verdict_note": (
+            "Promote the ensemble to trading only if high_conviction.lower_bound > 0.50 "
+            "AND it clears DHJ on out-of-sample data. lower_bound <= 0.50 means still a coin flip."
+        ),
+    }
+
+
 # ── Model Registry ────────────────────────────────────────────────────────────
 
 @router.get("/registry")

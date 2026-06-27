@@ -107,7 +107,7 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
     """Check past-horizon DHJ forecasts every minute and record outcomes."""
     from sqlalchemy import and_, select as _select
     from database import AsyncSessionLocal as _ASL
-    from models.orm import ForecastLog
+    from models.orm import ForecastLog, EnsembleForecastLog
     from services.market_data import PAIR_CONFIG
 
     while True:
@@ -127,8 +127,6 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
                 )
                 result = await db.execute(q)
                 pending = result.scalars().all()
-                if not pending:
-                    continue
                 evaluated = 0
                 for log in pending:
                     bar = market_data.get_price(log.pair)
@@ -149,9 +147,41 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
                         )
                     log.evaluated_at = now
                     evaluated += 1
-                if evaluated:
+                # ── Ensemble shadow forecasts (same horizon logic) ───────────
+                eq = (
+                    _select(EnsembleForecastLog)
+                    .where(
+                        and_(
+                            EnsembleForecastLog.horizon_at <= now,
+                            EnsembleForecastLog.evaluated_at.is_(None),
+                        )
+                    )
+                    .limit(50)
+                )
+                eresult = await db.execute(eq)
+                epending = eresult.scalars().all()
+                e_evaluated = 0
+                for elog in epending:
+                    bar = market_data.get_price(elog.pair)
+                    if bar is None:
+                        continue
+                    pip = PAIR_CONFIG.get(elog.pair, {}).get("pip", 0.0001)
+                    e_actual = round((bar.mid - elog.spot_price) / pip, 1)
+                    elog.outcome_price     = round(bar.mid, 6)
+                    elog.actual_move_pips  = e_actual
+                    elog.direction_correct = (
+                        (e_actual > 0 and elog.direction == "UP") or
+                        (e_actual < 0 and elog.direction == "DOWN")
+                    )
+                    elog.evaluated_at = now
+                    e_evaluated += 1
+
+                if evaluated or e_evaluated:
                     await db.commit()
-                    logger.info(f"Forecast evaluator: marked {evaluated} forecast(s)")
+                    logger.info(
+                        "Forecast evaluator: marked %d DHJ, %d ensemble forecast(s)",
+                        evaluated, e_evaluated,
+                    )
         except Exception:
             logger.exception("Error in forecast evaluation loop")
 

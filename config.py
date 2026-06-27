@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
+    # ── Ensemble model (shadow mode) ──────────────────────────────────────────
+    # An independent multi-signal model logged alongside DHJ for head-to-head
+    # out-of-sample comparison. NOT used for trading until it proves out.
+    ensemble_shadow_enabled: bool = True
+    ensemble_high_conviction: int = 3   # |net vote| at/above which a call is "high conviction"
+    # Approximate central-bank policy rates (%) for the carry signal. Slow-moving;
+    # update when policy shifts. Used only for rate-differential direction.
+    policy_rates: dict = {
+        "USD": 4.50, "EUR": 2.40, "GBP": 4.25, "JPY": 0.50,
+        "AUD": 3.85, "CAD": 2.75, "CHF": 0.25, "NZD": 3.25,
+    }
+    carry_diff_threshold: float = 1.0   # min rate-differential (%) to register a carry vote
+
     # ── Signal-quality gates (hard pre-trade filters) ─────────────────────────
     # The only directional edge in the data is DHJ↔Black-Scholes disagreement
     # (~51.8%); DHJ agreement and MILD_BULLISH calls are at/below coin-flip.
