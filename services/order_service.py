@@ -481,6 +481,100 @@ class OrderService:
         logger.info("Position closed: id=%d action=%s pnl=%.2f", position_id, action, pnl)
         return True, f"Closed position {position_id} @ {close_price:.5f}, PnL: {pnl:.2f}", pnl
 
+    # ── Trailing stop / breakeven ─────────────────────────────────────────────
+
+    async def update_trailing_stops(self) -> None:
+        """
+        Ratchet protective stops on winning positions so they cannot round-trip
+        back into a loss.  Two stages, both moving the stop only in the
+        favorable direction (never loosening it):
+
+          1. Breakeven — once profit ≥ breakeven_trigger_pips, the stop jumps to
+             entry (+ a small buffer to cover spread), guaranteeing the trade
+             can't turn red.
+          2. Trail — once profit ≥ trail_trigger_pips, the stop follows the best
+             price at trail_distance_pips behind it.
+
+        The stored stop_loss itself is the high-water ratchet: each tick we
+        compute a candidate stop from the live price and only adopt it when it
+        is tighter than the current stop, so no peak-price column is needed.
+        """
+        if not settings.trailing_stop_enabled:
+            return
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Position).where(Position.status == "OPEN"))
+            positions = result.scalars().all()
+
+            oanda_updates: list[tuple[str, str, float, Optional[float]]] = []
+            dirty = False
+
+            for pos in positions:
+                bar = market_data.get_price(pos.pair)
+                if bar is None:
+                    continue
+                pip = PAIR_CONFIG.get(pos.pair, {}).get("pip", 0.0001)
+                # Mark against the price we'd exit at (the protective-stop side).
+                current = bar.bid if pos.direction == "BUY" else bar.ask
+                profit_pips = (
+                    (current - pos.entry_price) / pip
+                    if pos.direction == "BUY"
+                    else (pos.entry_price - current) / pip
+                )
+
+                if profit_pips < settings.breakeven_trigger_pips:
+                    continue
+
+                # Candidate stop from the trailing stage (if armed), else breakeven.
+                if profit_pips >= settings.trail_trigger_pips:
+                    trail = settings.trail_distance_pips * pip
+                    candidate = current - trail if pos.direction == "BUY" else current + trail
+                else:
+                    buf = settings.breakeven_buffer_pips * pip
+                    candidate = pos.entry_price + buf if pos.direction == "BUY" else pos.entry_price - buf
+
+                # Ratchet: adopt only when strictly more protective than the current stop.
+                if pos.direction == "BUY":
+                    improved = pos.stop_loss is None or candidate > pos.stop_loss
+                else:
+                    improved = pos.stop_loss is None or candidate < pos.stop_loss
+                if not improved:
+                    continue
+
+                old_stop = pos.stop_loss
+                pos.stop_loss = round(candidate, 5)
+                dirty = True
+                stage = "trail" if profit_pips >= settings.trail_trigger_pips else "breakeven"
+                logger.info(
+                    "Trailing stop [%s %s pos %d]: %s — profit %.1fp, stop %s→%.5f",
+                    pos.direction, pos.pair, pos.id, stage, profit_pips,
+                    f"{old_stop:.5f}" if old_stop is not None else "None", pos.stop_loss,
+                )
+                if pos.oanda_trade_id:
+                    oanda_updates.append((pos.oanda_trade_id, pos.pair, pos.stop_loss, pos.take_profit))
+
+            if dirty:
+                await db.commit()
+
+        # Push the new stops to OANDA's broker-level orders outside the DB session.
+        if oanda_updates and settings.trading_mode == "oanda" and settings.oanda_api_key:
+            from services.oanda_client import oanda_client, PAIR_TO_OANDA
+            for trade_id, pair, new_stop, tp in oanda_updates:
+                try:
+                    # Re-send TP alongside SL so OANDA's dependent-orders replace
+                    # doesn't drop the existing take-profit.
+                    await oanda_client.set_trade_orders(
+                        oanda_trade_id=trade_id,
+                        oanda_instrument=PAIR_TO_OANDA.get(pair, ""),
+                        sl_price=new_stop,
+                        tp_price=tp,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Trailing stop: failed to update OANDA trade %s (internal monitor still active): %s",
+                        trade_id, exc,
+                    )
+
     # ── SL/TP monitoring ──────────────────────────────────────────────────────
 
     async def check_sl_tp(self) -> None:
@@ -534,6 +628,7 @@ class OrderService:
         while True:
             try:
                 await portfolio_service.update_unrealised_pnl()
+                await self.update_trailing_stops()
                 await self.check_sl_tp()
                 # Drawdown circuit-breaker
                 state = await portfolio_service.get_state()

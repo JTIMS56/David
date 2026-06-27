@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
+    # ── Profit protection (trailing stop / breakeven) ─────────────────────────
+    # Lock in gains so a winning position cannot round-trip back into a loss.
+    trailing_stop_enabled: bool = True
+    breakeven_trigger_pips: float = 10.0  # profit at which stop jumps to entry (breakeven)
+    breakeven_buffer_pips: float = 1.0    # lock this many pips beyond entry (covers spread)
+    trail_trigger_pips: float = 15.0      # profit at which the trailing stop activates
+    trail_distance_pips: float = 10.0     # trail this far behind the best price reached
+
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./fx_trading.db"
 
