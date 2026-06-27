@@ -123,6 +123,22 @@ class OrderService:
         data_age    = _data_age_seconds(bar)
         s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
 
+        # ── Signal-quality gate (mandatory, LLM cannot bypass) ────────────────
+        sig_decision = risk_gate.approve_signal(pair=pair, direction=direction, source=source)
+        if not sig_decision.allowed:
+            logger.warning(
+                "Order BLOCKED by signal gate [%s %s %s]: %s",
+                direction, size, pair, sig_decision.reason,
+            )
+            await _write_audit(
+                source=source, event_type="ORDER_REJECT",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=False, gate_reason=sig_decision.reason,
+                details={"checks_run": sig_decision.checks_run, "gate": "signal"},
+            )
+            return False, f"Order blocked: {sig_decision.reason}", None
+
         # ── Hard gate (mandatory, LLM cannot bypass) ──────────────────────────
         decision = risk_gate.approve_order(
             pair=pair,

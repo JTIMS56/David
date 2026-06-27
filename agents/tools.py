@@ -92,7 +92,16 @@ TOOL_DEFINITIONS = [
         "description": (
             "Open a new BUY or SELL position. Always provide stop_loss. "
             "Providing take_profit is strongly recommended. "
-            "Include your reasoning so it can be logged."
+            "Include your reasoning so it can be logged.\n"
+            "HARD SIGNAL GATE (enforced server-side — orders that fail are rejected, "
+            "so check these BEFORE calling to avoid wasted attempts):\n"
+            "  1. Call get_price_forecast for the pair first (within the last ~3 min).\n"
+            "  2. Only trade when DHJ and Black-Scholes DISAGREE on direction — that "
+            "is the only measured edge (~52%). If they agree, skip the pair.\n"
+            "  3. Your direction must MATCH the DHJ call (BUY if DHJ expects UP, SELL "
+            "if DOWN). Do not trade against DHJ.\n"
+            "  4. MILD_BULLISH signals are blocked (47% accurate). Skip them.\n"
+            "  5. EUR/GBP is blocked entirely (chronic churn)."
         ),
         "input_schema": {
             "type": "object",
@@ -457,6 +466,18 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         "rsi_at_forecast": round(ind["rsi"], 1) if ind else None,
     }
 
+    _bs_direction = "UP" if result.mean_bs > spot else "DOWN"
+
+    # Cache for the hard pre-trade signal gate (synchronous — must be set before
+    # the agent can place an order off this forecast in the same cycle).
+    from services.signal_cache import put_signal
+    put_signal(
+        pair=pair,
+        signal=signal,
+        dhj_direction=output["expected_direction"],
+        bs_direction=_bs_direction,
+    )
+
     asyncio.create_task(_log_forecast_to_db(
         pair=pair,
         spot_price=spot,
@@ -468,7 +489,7 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         chiral_charge=round(q5, 4),
         dhj_expected_price=round(result.mean_dhj, 6),
         bs_expected_price=round(result.mean_bs, 6),
-        bs_expected_direction="UP" if result.mean_bs > spot else "DOWN",
+        bs_expected_direction=_bs_direction,
     ))
 
     return output

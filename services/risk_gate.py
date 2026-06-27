@@ -24,6 +24,11 @@ from typing import Optional
 logger = logging.getLogger("david.risk_gate")
 
 
+def _dir_to_side(dhj_direction: str) -> str:
+    """Map a DHJ forecast direction to the order side that trades with it."""
+    return "BUY" if dhj_direction == "UP" else "SELL"
+
+
 @dataclass
 class GateDecision:
     allowed: bool
@@ -127,6 +132,83 @@ class RiskGate:
             "max_stop_pips":        self._max_stop_pips,
             "data_stale_seconds":   self._data_stale_seconds,
         }
+
+    # ── Signal-quality gate ────────────────────────────────────────────────────
+
+    def approve_signal(
+        self,
+        pair: str,
+        direction: str,
+        source: str = "agent",
+    ) -> GateDecision:
+        """
+        Enforce signal-quality rules derived from the live accuracy data:
+          • blocked pairs (chronic range-bound churn)
+          • no MILD_BULLISH entries (47% accurate — below coin flip)
+          • only trade when DHJ and Black-Scholes disagree (the ~51.8% edge)
+          • order direction must align with DHJ's call (where that edge lives)
+
+        Only autonomous agent orders are gated; human/manual orders pass through.
+        Reads the most recent forecast from signal_cache, which the forecast tool
+        populates synchronously each cycle before the agent can place an order.
+        """
+        from config import settings
+        from services.signal_cache import get_signal
+
+        checks: list[str] = ["signal_gate"]
+
+        if not settings.signal_gate_enabled or source != "agent":
+            return GateDecision(True, "Signal gate skipped", checks_run=checks)
+
+        # Blocked-pair list — pure pair check, no forecast required.
+        if pair in set(settings.blocked_pairs):
+            return GateDecision(
+                False,
+                f"{pair} is blocked — chronic range-bound churn, net loser in the data",
+                checks_run=checks,
+            )
+
+        sig = get_signal(pair)
+        if sig is None:
+            return GateDecision(
+                False,
+                f"No DHJ forecast cached for {pair} — run get_price_forecast before ordering",
+                checks_run=checks,
+            )
+
+        age = sig.age_seconds()
+        if age > settings.signal_max_age_seconds:
+            return GateDecision(
+                False,
+                f"DHJ forecast for {pair} is stale ({age:.0f}s > {settings.signal_max_age_seconds:.0f}s) "
+                f"— refresh get_price_forecast before ordering",
+                checks_run=checks,
+            )
+
+        if settings.block_mild_bullish and sig.signal == "MILD_BULLISH":
+            return GateDecision(
+                False,
+                f"{pair} signal is MILD_BULLISH (47% accurate in the data) — skip this setup",
+                checks_run=checks,
+            )
+
+        if settings.require_dhj_bs_disagreement and sig.dhj_direction == sig.bs_direction:
+            return GateDecision(
+                False,
+                f"{pair}: DHJ and Black-Scholes agree ({sig.dhj_direction}) — no edge; "
+                f"only trade when they disagree",
+                checks_run=checks,
+            )
+
+        if settings.require_direction_matches_dhj and direction != _dir_to_side(sig.dhj_direction):
+            return GateDecision(
+                False,
+                f"{pair}: order {direction} opposes DHJ call ({sig.dhj_direction}) — "
+                f"trade with the DHJ edge, not against it",
+                checks_run=checks,
+            )
+
+        return GateDecision(True, "Signal gate passed", checks_run=checks)
 
     # ── Primary gate ──────────────────────────────────────────────────────────
 

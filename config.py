@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
+    # ── Signal-quality gates (hard pre-trade filters) ─────────────────────────
+    # The only directional edge in the data is DHJ↔Black-Scholes disagreement
+    # (~51.8%); DHJ agreement and MILD_BULLISH calls are at/below coin-flip.
+    # These gates are enforced at the service layer — the LLM cannot bypass them.
+    signal_gate_enabled: bool = True
+    require_dhj_bs_disagreement: bool = True   # only trade when DHJ and BS disagree
+    require_direction_matches_dhj: bool = True # order must align with DHJ's call (where the edge is)
+    block_mild_bullish: bool = True            # MILD_BULLISH is 47% accurate — skip it
+    blocked_pairs: List[str] = ["EUR/GBP"]     # chronic range-bound churn — net loser
+    signal_max_age_seconds: float = 180.0      # forecast must be fresh to trade off it
+
     # ── Profit protection (trailing stop / breakeven) ─────────────────────────
     # Lock in gains so a winning position cannot round-trip back into a loss.
     trailing_stop_enabled: bool = True
