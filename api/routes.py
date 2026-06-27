@@ -762,6 +762,132 @@ async def forecast_accuracy():
     }
 
 
+def _wilson_lower_bound(correct: int, n: int, z: float = 1.64) -> float:
+    """
+    Wilson score lower bound for a binomial proportion (one-sided ~95% at z=1.64).
+    Guards against small-sample mirages: a cell at 4/5 = 80% has a lower bound near
+    0.38, so it won't be mistaken for a real edge.  Returns 0.0 for n == 0.
+    """
+    if n == 0:
+        return 0.0
+    p = correct / n
+    z2 = z * z
+    denom = 1 + z2 / n
+    centre = p + z2 / (2 * n)
+    margin = z * ((p * (1 - p) / n + z2 / (4 * n * n)) ** 0.5)
+    return max(0.0, (centre - margin) / denom)
+
+
+@router.get("/forecast/edge-analysis")
+async def forecast_edge_analysis(
+    min_samples: int = Query(20, ge=5, description="Minimum cell size to report an edge"),
+    edge_threshold: float = Query(0.55, ge=0.5, le=1.0, description="Accuracy needed to flag a tradeable cell"),
+):
+    """
+    Mine the evaluated forecast log for CONDITIONAL accuracy — the subsets where
+    DHJ actually beats a coin flip — so trading can be gated to real edges rather
+    than the ~50% blended average.
+
+    Each cell reports n, raw accuracy, and a Wilson lower-confidence bound. A cell
+    is only flagged tradeable when n >= min_samples AND its lower bound > 0.50
+    (so small-sample noise can't masquerade as an edge). Cells whose lower bound
+    sits BELOW 0.50 with accuracy < 0.45 are flagged as invertible (fade them).
+    """
+    from models.orm import ForecastLog
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(5000)
+        )
+        logs = result.scalars().all()
+
+    clean = [
+        l for l in logs
+        if l.evaluated_at is not None
+        and l.direction_correct is not None
+        and l.actual_move_pips is not None
+        and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+    ]
+
+    def cell(rows: list) -> dict:
+        n = len(rows)
+        ok = sum(1 for r in rows if r.direction_correct)
+        acc = round(ok / n, 3) if n else None
+        lb = round(_wilson_lower_bound(ok, n), 3) if n else None
+        tradeable = bool(n >= min_samples and lb is not None and lb > 0.50 and acc >= edge_threshold)
+        invertible = bool(n >= min_samples and acc is not None and acc < 0.45
+                          and _wilson_lower_bound(n - ok, n) > 0.50)
+        return {"n": n, "accuracy": acc, "lower_bound": lb,
+                "tradeable": tradeable, "invertible": invertible}
+
+    def group(key_fn) -> dict:
+        buckets: dict = {}
+        for l in clean:
+            k = key_fn(l)
+            if k is None:
+                continue
+            buckets.setdefault(k, []).append(l)
+        return {str(k): cell(v) for k, v in sorted(buckets.items())}
+
+    def hour_session(l) -> str:
+        h = l.created_at.hour
+        if 7 <= h < 12:   return "London(07-12)"
+        if 12 <= h < 17:  return "NY-overlap(12-17)"
+        if 17 <= h < 21:  return "NY(17-21)"
+        return "Asia(21-07)"
+
+    def conviction(l) -> str:
+        q = abs(l.chiral_charge)
+        if q >= 0.15: return "strong(|Q5|>=0.15)"
+        if q >= 0.05: return "mild(0.05-0.15)"
+        return "weak(<0.05)"
+
+    def agree_key(l) -> Optional[str]:
+        if not l.bs_expected_direction:
+            return None
+        return "agree" if l.bs_expected_direction == l.expected_direction else "disagree"
+
+    # Disagreement × conviction — the combination most likely to concentrate edge
+    def disagree_conviction(l) -> Optional[str]:
+        a = agree_key(l)
+        if a != "disagree":
+            return None
+        return f"disagree+{conviction(l)}"
+
+    breakdowns = {
+        "by_pair":                 group(lambda l: l.pair),
+        "by_signal":               group(lambda l: l.signal),
+        "by_signal_direction":     group(lambda l: f"{l.signal}/{l.expected_direction}"),
+        "by_dhj_bs_agreement":     group(agree_key),
+        "by_conviction":           group(conviction),
+        "by_session_utc":          group(hour_session),
+        "by_pair_x_agreement":     group(lambda l: f"{l.pair}/{agree_key(l)}" if agree_key(l) else None),
+        "by_disagree_conviction":  group(disagree_conviction),
+    }
+
+    # Collect everything flagged tradeable or invertible, sorted by strength
+    edges = []
+    for dim, cells in breakdowns.items():
+        for k, c in cells.items():
+            if c["tradeable"] or c["invertible"]:
+                edges.append({"dimension": dim, "cell": k, **c})
+    edges.sort(key=lambda e: e["lower_bound"], reverse=True)
+
+    overall_ok = sum(1 for l in clean if l.direction_correct)
+    return {
+        "clean_evaluated": len(clean),
+        "overall_accuracy": round(overall_ok / len(clean), 3) if clean else None,
+        "params": {"min_samples": min_samples, "edge_threshold": edge_threshold},
+        "edges_found": edges,
+        "breakdowns": breakdowns,
+        "note": (
+            "tradeable = n>=min_samples and Wilson lower bound > 0.50 and accuracy >= threshold. "
+            "invertible = accuracy < 0.45 with lower bound (of being wrong) > 0.50 — fade these. "
+            "Empty edges_found means no subset beats coin flip at this confidence yet."
+        ),
+    }
+
+
 # ── Model Registry ────────────────────────────────────────────────────────────
 
 @router.get("/registry")
