@@ -888,6 +888,85 @@ async def forecast_edge_analysis(
     }
 
 
+@router.get("/forecast/edge-map-validation")
+async def edge_map_validation():
+    """
+    Replay the per-pair edge map over the forecast log and split its accuracy
+    into IN-SAMPLE (created on/before the cutoff — where the edges were found)
+    vs OUT-OF-SAMPLE (created after the cutoff — the honest test). The edges are
+    real only if the out-of-sample numbers hold up. Pure replay, no new logging.
+    """
+    from datetime import datetime as _dt
+    from models.orm import ForecastLog
+    from services.edge_map import recommend, was_correct
+
+    try:
+        cutoff = _dt.fromisoformat(settings.edge_map_cutoff)
+    except (ValueError, TypeError):
+        cutoff = None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(20000)
+        )
+        logs = result.scalars().all()
+
+    clean = [
+        l for l in logs
+        if l.evaluated_at is not None and l.direction_correct is not None
+        and l.actual_move_pips is not None and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+    ]
+
+    def summarize(rows: list) -> dict:
+        # rows is a list of (cell_key, correct_bool)
+        per_cell: dict = {}
+        for key, correct in rows:
+            per_cell.setdefault(key, []).append(correct)
+        out = {}
+        for key, results in sorted(per_cell.items()):
+            n = len(results); ok = sum(1 for c in results if c)
+            out[key] = {
+                "n": n,
+                "accuracy": round(ok / n, 3) if n else None,
+                "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+            }
+        n = len(rows); ok = sum(1 for _, c in rows if c)
+        return {
+            "overall": {
+                "n": n,
+                "accuracy": round(ok / n, 3) if n else None,
+                "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+            },
+            "by_cell": out,
+        }
+
+    in_sample, out_sample = [], []
+    for l in clean:
+        action, _side = recommend(l.pair, l.expected_direction, l.bs_expected_direction)
+        if action == "SKIP":
+            continue
+        correct = was_correct(action, l.direction_correct)
+        if correct is None:
+            continue
+        agreement = "agree" if l.expected_direction == l.bs_expected_direction else "disagree"
+        key = f"{l.pair}/{agreement}/{action.lower()}"
+        bucket = out_sample if (cutoff and l.created_at > cutoff) else in_sample
+        bucket.append((key, correct))
+
+    return {
+        "cutoff": settings.edge_map_cutoff,
+        "edge_map": settings.edge_map,
+        "in_sample": summarize(in_sample),
+        "out_of_sample": summarize(out_sample),
+        "verdict_note": (
+            "Promote a cell to live trading only when its OUT-OF-SAMPLE lower_bound > 0.50 "
+            "with a real sample (n >= ~20 independent days). out_of_sample.overall.n grows as "
+            "the agent keeps forecasting; check back in 1-2 weeks. In-sample reproduces the "
+            "discovery numbers and is NOT evidence on its own."
+        ),
+    }
+
+
 @router.get("/forecast/ensemble-accuracy")
 async def ensemble_accuracy():
     """

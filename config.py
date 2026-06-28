@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
+    # ── Per-pair edge map (shadow validation) ─────────────────────────────────
+    # Conditional edges found in the forecast log: per pair, whether to trade
+    # WITH or FADE the DHJ call depending on DHJ↔BS agreement. Discovered
+    # in-sample; running in shadow until they hold up out-of-sample (after the
+    # cutoff). NOT wired into trading yet.
+    edge_map: dict = {
+        "NZD/USD": {"agree": "with", "disagree": "fade"},
+        "EUR/USD": {"disagree": "with"},
+        "USD/CHF": {"agree": "fade"},
+        "AUD/USD": {"agree": "fade"},
+    }
+    edge_map_cutoff: str = "2026-06-28"   # forecasts created after this are out-of-sample
+
     # ── Ensemble model (shadow mode) ──────────────────────────────────────────
     # An independent multi-signal model logged alongside DHJ for head-to-head
     # out-of-sample comparison. NOT used for trading until it proves out.
