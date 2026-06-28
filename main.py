@@ -269,7 +269,12 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 @app.get("/", include_in_schema=False)
 async def serve_dashboard():
-    return FileResponse(str(static_dir / "index.html"))
+    # no-cache so the browser always revalidates the dashboard HTML after a
+    # deploy — prevents stale cached JS (the recurring "old index.html" trap).
+    return FileResponse(
+        str(static_dir / "index.html"),
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 # ── Health checks (public — no auth required) ─────────────────────────────────
