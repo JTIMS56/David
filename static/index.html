@@ -412,69 +412,34 @@ function handlePricesUpdate(msg) {
 function updateRates(rates) {
   const grid = $('rates-grid');
   Object.entries(rates).forEach(([pair, r]) => {
-    let row = document.querySelector(`[data-pair="${pair}"]`);
+    // Find existing row or create one with a consistent, data-field structure.
+    let row = grid.querySelector(`[data-pair="${pair}"]`);
     if (!row) {
       row = document.createElement('div');
       row.className = 'rate-row';
       row.setAttribute('data-pair', pair);
       row.innerHTML = `<span class="rate-pair">${pair}</span>
         <span style="text-align:right">
-          <div class="rate-price" data-field="mid"></div>
+          <div class="rate-price" data-field="mid" style="font-family:var(--font)"></div>
           <div class="rate-spread" data-field="spread"></div>
         </span>`;
-      grid.innerHTML = '';
       grid.appendChild(row);
-      // re-add all
     }
-    const prev = prevPrices[pair];
     const midEl = row.querySelector('[data-field="mid"]');
     const spreadEl = row.querySelector('[data-field="spread"]');
+    if (!midEl || !spreadEl) return;
+
+    const prev = prevPrices[pair];
+    if (prev && r.mid !== prev.mid) {
+      midEl.className = 'rate-price ' + (r.mid > prev.mid ? 'pos' : 'neg');
+      row.classList.remove('flash-up', 'flash-down');
+      void row.offsetWidth;   // restart the CSS flash animation
+      row.classList.add(r.mid > prev.mid ? 'flash-up' : 'flash-down');
+    }
     midEl.textContent = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
     spreadEl.textContent = r.spread_pips.toFixed(1) + ' pip';
-    if (prev) {
-      if (r.mid > prev.mid) { row.classList.remove('flash-down'); row.classList.add('flash-up'); midEl.className = 'rate-price pos'; }
-      else if (r.mid < prev.mid) { row.classList.remove('flash-up'); row.classList.add('flash-down'); midEl.className = 'rate-price neg'; }
-    }
     prevPrices[pair] = r;
   });
-
-  // Rebuild grid cleanly
-  const pairs = Object.keys(rates);
-  if (grid.children.length !== pairs.length) {
-    grid.innerHTML = '';
-    pairs.forEach(pair => {
-      const r = rates[pair];
-      const row = document.createElement('div');
-      row.className = 'rate-row';
-      row.setAttribute('data-pair', pair);
-      const pips = r.spread_pips.toFixed(1);
-      row.innerHTML = `<span class="rate-pair">${pair}</span>
-        <span style="text-align:right">
-          <div class="rate-price" style="font-family:var(--font)">${r.mid.toFixed(pair.includes('JPY') ? 3 : 5)}</div>
-          <div class="rate-spread">${pips} pip</div>
-        </span>`;
-      grid.appendChild(row);
-    });
-  } else {
-    pairs.forEach(pair => {
-      const r = rates[pair];
-      const row = grid.querySelector(`[data-pair="${pair}"]`);
-      if (!row) return;
-      const prev = prevPrices[pair];
-      const midEl = row.querySelector('.rate-price');
-      if (midEl) {
-        const newMid = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
-        if (prev && r.mid !== prev.mid) {
-          midEl.className = 'rate-price ' + (r.mid > prev.mid ? 'pos' : 'neg');
-          row.classList.remove('flash-up', 'flash-down');
-          void row.offsetWidth;
-          row.classList.add(r.mid > prev.mid ? 'flash-up' : 'flash-down');
-        }
-        midEl.textContent = newMid;
-      }
-      prevPrices[pair] = r;
-    });
-  }
 }
 
 function updateMetrics(p) {
