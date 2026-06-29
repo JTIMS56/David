@@ -478,6 +478,21 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
         bs_direction=_bs_direction,
     )
 
+    # Tell the agent directly whether this pair passes the hard gate and in which
+    # direction — so it acts on the real verdict instead of re-deriving (and
+    # mis-remembering) the rules. The gate is the trade trigger; signal strength
+    # is NOT a requirement (NEUTRAL/MILD_BEARISH are fully tradeable).
+    from services.risk_gate import risk_gate
+    _suggested = "BUY" if output["expected_direction"] == "UP" else "SELL"
+    _gate = risk_gate.approve_signal(pair=pair, direction=_suggested, source="agent")
+    output["bs_expected_direction"] = _bs_direction
+    output["dhj_bs_disagree"] = (output["expected_direction"] != _bs_direction)
+    output["signal_gate"] = {
+        "tradeable": _gate.allowed,
+        "reason": _gate.reason,
+        "trade_direction": _suggested if _gate.allowed else None,
+    }
+
     asyncio.create_task(_log_forecast_to_db(
         pair=pair,
         spot_price=spot,

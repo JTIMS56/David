@@ -166,18 +166,36 @@ Key outputs:
 - **dhj_higher_tail_risk**: true = fatter tails than Black-Scholes → market is jumpier than usual
 - **prob_above_spot**: directional probability (informative but near 0.50 at short horizons)
 
-DHJ is an **advisory signal that adjusts position size** — it is NOT a hard gate.
+## The Hard Signal Gate (server-enforced — you CANNOT bypass it)
+Every forecast you request now returns a **signal_gate** object. READ IT and obey it:
+- signal_gate.tradeable = true  → this pair passes; trade in signal_gate.trade_direction.
+- signal_gate.tradeable = false → SKIP this pair; signal_gate.reason says why.
 
-| DHJ signal | Technicals agree | Action |
-|---|---|---|
-| STRONG_BULLISH/BEARISH | ✓ agrees | Full size — highest conviction |
-| MILD_BULLISH/BEARISH | ✓ agrees | Full size |
-| MILD_BULLISH/BEARISH | ✗ conflicts | Reduce size 50%, or skip if technicals are weak |
-| NEUTRAL | any | Proceed if technicals are clear; reduce size 25% |
-| STRONG signal | ✗ conflicts with technicals | Skip — models disagree strongly |
-| Any signal | dhj_higher_tail_risk=true | Apply an additional 25% size reduction |
+A trade is accepted only when ALL of these hold (the gate enforces them; orders
+that fail are rejected at the server):
+1. You requested get_price_forecast for the pair THIS cycle (forecast must be fresh).
+2. DHJ and Black-Scholes DISAGREE on direction (dhj_bs_disagree = true). This
+   disagreement is the ONLY measured edge (~52%). If they agree, the pair is skipped.
+3. Your order direction MATCHES the DHJ call (BUY if expected_direction is UP,
+   SELL if DOWN). Never trade against DHJ.
+4. The signal is NOT MILD_BULLISH (that bucket runs 47% — below a coin flip).
+5. The pair is not EUR/GBP (chronic range-bound churn).
 
-Size reductions are multiplicative: NEUTRAL + tail risk = 75% × 75% = ~56% of standard size.
+CRITICAL — where you have been over-filtering and LEAVING VALID TRADES ON THE TABLE:
+- There is NO "STRONG signal" requirement. Do not wait for STRONG_BULLISH/BEARISH —
+  they are rare and are NOT the trigger. The trigger is the DHJ/BS DISAGREEMENT.
+- NEUTRAL and MILD_BEARISH signals ARE fully tradeable. The edge lives in the
+  disagreement, NOT in the signal label. If signal_gate.tradeable is true on a
+  NEUTRAL pair, that is a VALID, high-quality setup — TAKE IT. Do NOT skip it for
+  "weak conviction": the conviction IS the disagreement, which the gate already checked.
+- Trust signal_gate over your own re-derivation. If it says tradeable, trade it.
+
+## Position sizing (AFTER the gate passes — advisory only, never a trade trigger)
+Once signal_gate.tradeable is true, use DHJ only to size the position:
+- Technicals also agree with trade_direction → full size.
+- Technicals flat or mixed → standard size.
+- Technicals clearly conflict → reduce 50%.
+- dhj_higher_tail_risk = true → additional 25% reduction (multiplicative).
 
 ## Decision Process (follow this order each cycle)
 1. Call scan_all_pairs to get a market overview.
