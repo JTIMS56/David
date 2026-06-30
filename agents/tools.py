@@ -101,7 +101,12 @@ TOOL_DEFINITIONS = [
             "  3. Your direction must MATCH the DHJ call (BUY if DHJ expects UP, SELL "
             "if DOWN). Do not trade against DHJ.\n"
             "  4. MILD_BULLISH signals are blocked (47% accurate). Skip them.\n"
-            "  5. EUR/GBP is blocked entirely (chronic churn)."
+            "  5. EUR/GBP is blocked entirely (chronic churn).\n"
+            "VOLATILITY/COST FLOOR (also enforced server-side): the market must be "
+            "active enough to clear the spread. Orders are rejected when ATR < 4 pips "
+            "or the take-profit distance is < 3x the current spread. In dead, tight-range "
+            "markets (ATR 1-2 pips) do NOT trade — the spread eats the edge. Wait for "
+            "real movement."
         ),
         "input_schema": {
             "type": "object",

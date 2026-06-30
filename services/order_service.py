@@ -122,6 +122,10 @@ class OrderService:
         spread      = _spread_pips(pair, bar.bid, bar.ask)
         data_age    = _data_age_seconds(bar)
         s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
+        _pip        = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+        tp_pips     = abs(take_profit - entry_price) / _pip if take_profit is not None else None
+        _ind        = market_data.calculate_indicators(pair)
+        atr_pips    = _ind.get("atr_pips") if _ind else None
 
         # ── Signal-quality gate (mandatory, LLM cannot bypass) ────────────────
         sig_decision = risk_gate.approve_signal(pair=pair, direction=direction, source=source)
@@ -151,6 +155,8 @@ class OrderService:
             source=source,
             stop_pips=s_pips,
             take_profit=take_profit,
+            atr_pips=atr_pips,
+            tp_pips=tp_pips,
         )
 
         if not decision.allowed:

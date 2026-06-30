@@ -58,6 +58,8 @@ class RiskGate:
         self._max_drawdown_pct   = max_drawdown_pct
         self._min_stop_pips      = min_stop_pips
         self._max_stop_pips      = max_stop_pips
+        self._min_atr_pips           = 4.0   # volatility floor (pips); wired from settings
+        self._min_tp_spread_multiple = 3.0   # require TP distance >= this x spread
 
     # ── Kill switch ────────────────────────────────────────────────────────────
 
@@ -224,6 +226,8 @@ class RiskGate:
         source: str = "agent",   # "agent" | "human" | "sl_tp"
         stop_pips: Optional[float] = None,
         take_profit: Optional[float] = None,
+        atr_pips: Optional[float] = None,
+        tp_pips: Optional[float] = None,
     ) -> GateDecision:
         """
         Evaluate one order. Returns a GateDecision with allowed=True only when
@@ -321,6 +325,28 @@ class RiskGate:
                 f"Spread {spread_pips:.1f} pips exceeds max {self._max_spread_pips:.1f}",
                 checks_run=checks,
             )
+
+        # 6b. Volatility / cost floor — don't trade dead markets where the spread
+        # eats the signal. Applies to autonomous orders only; humans may override.
+        if source == "agent":
+            checks.append("volatility_floor")
+            if atr_pips is not None and atr_pips < self._min_atr_pips:
+                return GateDecision(
+                    False,
+                    f"ATR {atr_pips:.1f} pips below minimum {self._min_atr_pips:.1f} — "
+                    f"market too quiet to clear costs",
+                    checks_run=checks,
+                )
+            if (
+                tp_pips is not None and spread_pips > 0
+                and tp_pips < self._min_tp_spread_multiple * spread_pips
+            ):
+                return GateDecision(
+                    False,
+                    f"take-profit {tp_pips:.1f} pips < {self._min_tp_spread_multiple:.0f}x spread "
+                    f"({spread_pips:.1f} pips) — target too small to clear costs",
+                    checks_run=checks,
+                )
 
         # 7. Sanity: valid size, direction, price
         checks.append("sanity")

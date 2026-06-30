@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     min_stop_pips: float = 15.0       # minimum stop distance (pips); blocks dangerously tight stops
     max_stop_pips: float = 50.0       # hard cap on stop distance; blocks orders with wider stops
 
+    # Volatility / cost floor — don't trade dead markets where the spread eats
+    # the signal (the cycle-#20 overtrading bleed: 1.2-1.8p ATR, ~1.5p spread).
+    min_atr_pips: float = 4.0             # skip when ATR is below this (market too quiet)
+    min_tp_spread_multiple: float = 3.0   # require take-profit distance >= this x current spread
+
     # ── Per-pair edge map (shadow validation) ─────────────────────────────────
     # Conditional edges found in the forecast log: per pair, whether to trade
     # WITH or FADE the DHJ call depending on DHJ↔BS agreement. Discovered

@@ -207,6 +207,8 @@ async def lifespan(app: FastAPI):
     risk_gate._max_drawdown_pct = settings.max_drawdown_pct
     risk_gate._min_stop_pips    = settings.min_stop_pips
     risk_gate._max_stop_pips    = settings.max_stop_pips
+    risk_gate._min_atr_pips           = settings.min_atr_pips
+    risk_gate._min_tp_spread_multiple = settings.min_tp_spread_multiple
 
     # Wire up order service broadcast
     order_service.set_broadcast(manager.broadcast)
