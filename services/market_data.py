@@ -372,11 +372,15 @@ class MarketDataService:
         sma50 = sma(closes, 50)
         sma200 = sma(closes, min(200, len(closes)))
 
-        # ATR (14)
-        highs = np.array([b.ask for b in bars])
-        lows = np.array([b.bid for b in bars])
-        tr = np.maximum(highs - lows, np.abs(highs[1:] - closes[:-1], where=True) if False else highs - lows)
-        atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else float(np.mean(tr))
+        # Volatility — realized range of the MID price over a recent window.
+        # NOTE: the previous implementation computed (ask - bid), i.e. the bid/ask
+        # SPREAD, not price movement — so "atr" sat ~constant at the spread (~1.5p)
+        # and never reflected how much price was actually moving. A PriceBar has no
+        # intrabar high/low (only a snapshot bid/ask/mid), so true range is measured
+        # from how far the mid has ranged over the lookback window.
+        vol_window = min(120, len(closes))
+        recent = closes[-vol_window:]
+        atr = float(np.max(recent) - np.min(recent))
 
         # Trend detection
         trend = "NEUTRAL"
