@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     min_atr_pips: float = 4.0             # skip when ATR is below this (market too quiet)
     min_tp_spread_multiple: float = 3.0   # require take-profit distance >= this x current spread
 
+    # Shadow mode — when True the agent analyzes, forecasts, and logs the orders
+    # it WOULD place (SHADOW_ORDER audit) but executes nothing. Paused here until
+    # a real edge validates out-of-sample; trading blanket DHJ/BS disagreement is
+    # a coin flip that only pays spread. Flip to False (or POST /api/risk/shadow-mode)
+    # to resume live execution.
+    start_in_shadow_mode: bool = True
+
     # ── Per-pair edge map (shadow validation) ─────────────────────────────────
     # Conditional edges found in the forecast log: per pair, whether to trade
     # WITH or FADE the DHJ call depending on DHJ↔BS agreement. Discovered
