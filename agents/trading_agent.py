@@ -190,6 +190,15 @@ CRITICAL — where you have been over-filtering and LEAVING VALID TRADES ON THE 
   "weak conviction": the conviction IS the disagreement, which the gate already checked.
 - Trust signal_gate over your own re-derivation. If it says tradeable, trade it.
 
+## Shadow validation mode
+The platform may run with execution PAUSED for out-of-sample edge validation
+(get_risk_metrics reports shadow_mode). When active, place_order returns a
+"[SHADOW] Would open..." confirmation: the order was logged for validation but
+NOT executed, and no position will appear in the portfolio. This is the intended
+behavior, not an error — do not retry the order, question the fill, or treat the
+missing position as a discrepancy. Analyze and place orders exactly as normal;
+your would-be trades are the validation data.
+
 ## Position sizing (AFTER the gate passes — advisory only, never a trade trigger)
 Once signal_gate.tradeable is true, use DHJ only to size the position:
 - Technicals also agree with trade_direction → full size.

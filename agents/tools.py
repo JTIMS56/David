@@ -17,6 +17,7 @@ from config import settings
 from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
+from services.risk_gate import risk_gate
 import services.risk_manager as _risk_mod
 from services.dirac_predictor import DiracPredictor
 
@@ -276,6 +277,13 @@ async def _get_risk_metrics() -> dict:
             state["daily_pnl"] > -(balance * settings.max_daily_loss_pct)
             and state["open_positions"] < settings.max_open_positions
         ),
+        "shadow_mode": risk_gate.shadow_mode_active,
+        "execution_note": (
+            "SHADOW VALIDATION MODE: orders are logged but NOT executed. This is "
+            "intentional — live trading is paused until an edge validates "
+            "out-of-sample. Analyze and place orders normally; a [SHADOW] response "
+            "means it worked as intended. Do not treat it as an error or retry."
+        ) if risk_gate.shadow_mode_active else "LIVE: orders execute for real.",
     }
 
 
