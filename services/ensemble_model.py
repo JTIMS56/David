@@ -36,6 +36,7 @@ class EnsembleForecast:
     conviction: int              # abs(net_vote)
     high_conviction: bool
     votes: Dict[str, int] = field(default_factory=dict)
+    event_blackout: bool = False # high-impact event imminent → conviction zeroed
 
 
 def _trend_vote(ind: dict) -> int:
@@ -123,21 +124,37 @@ def predict(pair: str, usd_score: Optional[float] = None) -> Optional[EnsembleFo
     if usd_score is None:
         usd_score = _usd_strength_score()
 
+    from services.sentiment import positioning_vote
+    from services.econ_calendar import is_blackout
+
     votes = {
         "trend":        _trend_vote(ind),
         "mean_revert":  _mean_revert_vote(ind),
         "carry":        _carry_vote(pair),
         "usd_strength": _usd_strength_vote(pair, usd_score),
+        # Contrarian crowd vote from OANDA's position book — information about
+        # participants, not another transformation of price. 0 when no data.
+        "positioning":  positioning_vote(pair),
     }
     net = sum(votes.values())
     direction = "UP" if net > 0 else "DOWN" if net < 0 else "FLAT"
     conviction = abs(net)
+
+    # Event blackout: a high-impact scheduled release for either currency is
+    # imminent. Spikes around releases are unpredictable from any of our
+    # signals, so conviction is zeroed — the honest call is "don't know".
+    blackout = is_blackout(pair) is not None
+    if blackout:
+        direction = "FLAT"
+        conviction = 0
+
     return EnsembleForecast(
         pair=pair,
         spot=round(spot, 6),
         direction=direction,
         net_vote=net,
         conviction=conviction,
-        high_conviction=conviction >= settings.ensemble_high_conviction,
+        high_conviction=(not blackout) and conviction >= settings.ensemble_high_conviction,
         votes=votes,
+        event_blackout=blackout,
     )

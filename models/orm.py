@@ -175,6 +175,8 @@ class EnsembleForecastLog(Base):
     vote_mean_revert: Mapped[int] = mapped_column(Integer, default=0)
     vote_carry: Mapped[int] = mapped_column(Integer, default=0)
     vote_usd_strength: Mapped[int] = mapped_column(Integer, default=0)
+    vote_positioning: Mapped[int] = mapped_column(Integer, default=0)
+    event_blackout: Mapped[bool] = mapped_column(Boolean, default=False)
     # Outcome — filled by background evaluator after horizon_at
     outcome_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     actual_move_pips: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

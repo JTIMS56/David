@@ -565,6 +565,8 @@ async def _log_ensemble_shadow(pair: str, spot: float, horizon_days: float) -> N
                 vote_mean_revert=fc.votes.get("mean_revert", 0),
                 vote_carry=fc.votes.get("carry", 0),
                 vote_usd_strength=fc.votes.get("usd_strength", 0),
+                vote_positioning=fc.votes.get("positioning", 0),
+                event_blackout=fc.event_blackout,
             ))
             await db.commit()
     except Exception as exc:

@@ -82,6 +82,17 @@ class Settings(BaseSettings):
     }
     edge_map_cutoff: str = "2026-06-28"   # forecasts created after this are out-of-sample
 
+    # ── Crowd sentiment (OANDA position book) ─────────────────────────────────
+    # Contrarian vote: fade the retail crowd when positioning is one-sided.
+    positioning_fade_threshold: float = 65.0   # % of positions on one side to trigger a fade vote
+    position_book_refresh_seconds: int = 1200  # OANDA refreshes the book ~every 20 min
+
+    # ── Economic calendar (event blackout) ────────────────────────────────────
+    calendar_url: str = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    calendar_refresh_seconds: int = 21600      # re-fetch weekly feed every 6h
+    event_blackout_pre_minutes: int = 45       # no conviction this long BEFORE a high-impact event
+    event_blackout_post_minutes: int = 30      # ... and this long AFTER it hits
+
     # ── Ensemble model (shadow mode) ──────────────────────────────────────────
     # An independent multi-signal model logged alongside DHJ for head-to-head
     # out-of-sample comparison. NOT used for trading until it proves out.

@@ -1003,7 +1003,8 @@ async def ensemble_accuracy():
     # Per-signal standalone accuracy: does each vote, alone, beat coin flip?
     per_signal = {}
     for name, attr in [("trend", "vote_trend"), ("mean_revert", "vote_mean_revert"),
-                       ("carry", "vote_carry"), ("usd_strength", "vote_usd_strength")]:
+                       ("carry", "vote_carry"), ("usd_strength", "vote_usd_strength"),
+                       ("positioning", "vote_positioning")]:
         voted = []
         for l in e_clean:
             v = getattr(l, attr)
@@ -1032,6 +1033,48 @@ async def ensemble_accuracy():
             "Promote the ensemble to trading only if high_conviction.lower_bound > 0.50 "
             "AND it clears DHJ on out-of-sample data. lower_bound <= 0.50 means still a coin flip."
         ),
+    }
+
+
+@router.get("/feeds/status")
+async def feeds_status():
+    """
+    Health of the ensemble's new information feeds: OANDA crowd positioning
+    per pair, and the economic-calendar blackout state / upcoming events.
+    """
+    from services import econ_calendar, sentiment
+    from services.oanda_client import PAIR_TO_OANDA
+
+    positioning = {}
+    for pair in PAIR_TO_OANDA:
+        data = sentiment.get_positioning(pair)
+        if data:
+            positioning[pair] = {
+                "long_pct": data["long_pct"],
+                "short_pct": data["short_pct"],
+                "vote": sentiment.positioning_vote(pair),
+                "as_of": data.get("time", ""),
+            }
+
+    upcoming = [
+        {
+            "title": e["title"],
+            "currency": e["currency"],
+            "at": e["at"].isoformat(),
+        }
+        for e in econ_calendar.upcoming_high_impact(24.0)[:10]
+    ]
+    blackouts = {
+        pair: bool(econ_calendar.is_blackout(pair)) for pair in PAIR_TO_OANDA
+    }
+
+    return {
+        "positioning": positioning,
+        "positioning_pairs_cached": len(positioning),
+        "fade_threshold_pct": settings.positioning_fade_threshold,
+        "calendar_events_loaded": len(econ_calendar._events),
+        "upcoming_high_impact_24h": upcoming,
+        "blackout_now": blackouts,
     }
 
 

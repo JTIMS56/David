@@ -91,6 +91,15 @@ async def _migrate_schema(engine) -> None:
                 await conn.execute(
                     text(f"ALTER TABLE forecast_logs ADD COLUMN IF NOT EXISTS {_col} {_typ}")
                 )
+            # ensemble_forecast_logs: positioning vote + event blackout (phase 1
+            # of the DHJ replacement — new information sources)
+            for _col, _typ in [
+                ("vote_positioning", "INTEGER DEFAULT 0"),
+                ("event_blackout",   "BOOLEAN DEFAULT FALSE"),
+            ]:
+                await conn.execute(
+                    text(f"ALTER TABLE ensemble_forecast_logs ADD COLUMN IF NOT EXISTS {_col} {_typ}")
+                )
 
 
 async def init_db() -> None:

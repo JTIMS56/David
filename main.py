@@ -231,6 +231,16 @@ async def lifespan(app: FastAPI):
     # Start forecast evaluation (checks DB every 60s for expired forecasts)
     eval_task = asyncio.create_task(evaluate_forecasts())
 
+    # New information feeds for the ensemble (phase 1 of the DHJ replacement).
+    # Both degrade gracefully: no data → vote 0 / no blackout.
+    from services import econ_calendar, sentiment
+    calendar_task = asyncio.create_task(econ_calendar.refresh_loop())
+    sentiment_task: asyncio.Task | None = None
+    if settings.oanda_api_key:
+        sentiment_task = asyncio.create_task(sentiment.refresh_loop())
+        logger.info("Sentiment feed started (OANDA position book)")
+    logger.info("Economic calendar feed started")
+
     # Auto-start agent only when explicitly configured
     if settings.anthropic_api_key:
         await trading_agent.start()
@@ -245,6 +255,9 @@ async def lifespan(app: FastAPI):
     # Shutdown
     broadcast_task.cancel()
     eval_task.cancel()
+    calendar_task.cancel()
+    if sentiment_task:
+        sentiment_task.cancel()
     await trading_agent.stop()
     await order_service.stop_monitor()
     await market_data.stop()

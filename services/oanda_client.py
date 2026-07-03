@@ -90,6 +90,48 @@ class OandaClient:
             resp.raise_for_status()
             return resp.json()
 
+    # ── Sentiment: aggregate client positioning ───────────────────────────────
+
+    async def get_position_book(self, oanda_instrument: str) -> Optional[dict]:
+        """
+        Fetch OANDA's aggregate client position book for an instrument and
+        reduce it to overall long/short percentages.
+
+        GET /v3/instruments/{instrument}/positionBook
+
+        Each bucket carries longCountPercent / shortCountPercent as a share of
+        ALL open positions, so summing across buckets yields total crowd
+        positioning. OANDA refreshes this data ~every 20 minutes.
+
+        Returns {"long_pct": float, "short_pct": float, "time": str} or None
+        when unavailable (no credentials, unsupported instrument, API error).
+        """
+        if not settings.oanda_api_key:
+            return None
+
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/positionBook"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                book = resp.json().get("positionBook", {})
+        except Exception as exc:
+            logger.warning("Position book fetch failed for %s: %s", oanda_instrument, exc)
+            return None
+
+        buckets = book.get("buckets", [])
+        if not buckets:
+            return None
+        long_pct = sum(float(b.get("longCountPercent", 0.0)) for b in buckets)
+        short_pct = sum(float(b.get("shortCountPercent", 0.0)) for b in buckets)
+        return {
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "time": book.get("time", ""),
+        }
+
     # ── Order execution ───────────────────────────────────────────────────────
 
     async def place_market_order(
