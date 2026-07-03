@@ -107,13 +107,12 @@ class Settings(BaseSettings):
     carry_diff_threshold: float = 1.0   # min rate-differential (%) to register a carry vote
 
     # ── Signal-quality gates (hard pre-trade filters) ─────────────────────────
-    # The only directional edge in the data is DHJ↔Black-Scholes disagreement
-    # (~51.8%); DHJ agreement and MILD_BULLISH calls are at/below coin-flip.
-    # These gates are enforced at the service layer — the LLM cannot bypass them.
+    # Ensemble-based. DHJ is retired from the decision path (coin flip over
+    # ~800 evaluations; every conditional slice non-stationary) and runs only
+    # as a silent background benchmark. Enforced at the service layer — the
+    # LLM cannot bypass these.
     signal_gate_enabled: bool = True
-    require_dhj_bs_disagreement: bool = True   # only trade when DHJ and BS disagree
-    require_direction_matches_dhj: bool = True # order must align with DHJ's call (where the edge is)
-    block_mild_bullish: bool = True            # MILD_BULLISH is 47% accurate — skip it
+    min_trade_conviction: int = 2              # net ensemble votes required to trade (of 5 voters)
     blocked_pairs: List[str] = ["EUR/GBP"]     # chronic range-bound churn — net loser
     signal_max_age_seconds: float = 180.0      # forecast must be fresh to trade off it
 

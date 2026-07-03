@@ -24,9 +24,9 @@ from typing import Optional
 logger = logging.getLogger("david.risk_gate")
 
 
-def _dir_to_side(dhj_direction: str) -> str:
-    """Map a DHJ forecast direction to the order side that trades with it."""
-    return "BUY" if dhj_direction == "UP" else "SELL"
+def _dir_to_side(direction: str) -> str:
+    """Map a forecast direction (UP/DOWN) to the order side that trades with it."""
+    return "BUY" if direction == "UP" else "SELL"
 
 
 @dataclass
@@ -144,11 +144,15 @@ class RiskGate:
         source: str = "agent",
     ) -> GateDecision:
         """
-        Enforce signal-quality rules derived from the live accuracy data:
+        Enforce ensemble-based signal rules (DHJ is retired from the decision
+        path — it proved a coin flip over ~800 evaluations):
           • blocked pairs (chronic range-bound churn)
-          • no MILD_BULLISH entries (47% accurate — below coin flip)
-          • only trade when DHJ and Black-Scholes disagree (the ~51.8% edge)
-          • order direction must align with DHJ's call (where that edge lives)
+          • a fresh ensemble forecast must exist for the pair
+          • no trading inside a high-impact event blackout window
+          • ensemble conviction must reach min_trade_conviction (independent
+            voters agreeing: trend, mean-reversion, carry, USD breadth, crowd
+            positioning)
+          • order direction must match the ensemble's net-vote direction
 
         Only autonomous agent orders are gated; human/manual orders pass through.
         Reads the most recent forecast from signal_cache, which the forecast tool
@@ -174,7 +178,7 @@ class RiskGate:
         if sig is None:
             return GateDecision(
                 False,
-                f"No DHJ forecast cached for {pair} — run get_price_forecast before ordering",
+                f"No forecast cached for {pair} — run get_price_forecast before ordering",
                 checks_run=checks,
             )
 
@@ -182,31 +186,32 @@ class RiskGate:
         if age > settings.signal_max_age_seconds:
             return GateDecision(
                 False,
-                f"DHJ forecast for {pair} is stale ({age:.0f}s > {settings.signal_max_age_seconds:.0f}s) "
+                f"Forecast for {pair} is stale ({age:.0f}s > {settings.signal_max_age_seconds:.0f}s) "
                 f"— refresh get_price_forecast before ordering",
                 checks_run=checks,
             )
 
-        if settings.block_mild_bullish and sig.signal == "MILD_BULLISH":
+        if sig.event_blackout:
             return GateDecision(
                 False,
-                f"{pair} signal is MILD_BULLISH (47% accurate in the data) — skip this setup",
+                f"{pair}: high-impact economic event imminent — release spikes are "
+                f"unpredictable; no entries during the blackout window",
                 checks_run=checks,
             )
 
-        if settings.require_dhj_bs_disagreement and sig.dhj_direction == sig.bs_direction:
+        if sig.conviction < settings.min_trade_conviction:
             return GateDecision(
                 False,
-                f"{pair}: DHJ and Black-Scholes agree ({sig.dhj_direction}) — no edge; "
-                f"only trade when they disagree",
+                f"{pair}: ensemble conviction {sig.conviction} below minimum "
+                f"{settings.min_trade_conviction} — not enough independent signals agree",
                 checks_run=checks,
             )
 
-        if settings.require_direction_matches_dhj and direction != _dir_to_side(sig.dhj_direction):
+        if sig.direction == "FLAT" or direction != _dir_to_side(sig.direction):
             return GateDecision(
                 False,
-                f"{pair}: order {direction} opposes DHJ call ({sig.dhj_direction}) — "
-                f"trade with the DHJ edge, not against it",
+                f"{pair}: order {direction} does not match ensemble direction "
+                f"({sig.direction}) — trade with the ensemble or not at all",
                 checks_run=checks,
             )
 
