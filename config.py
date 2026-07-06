@@ -62,12 +62,15 @@ class Settings(BaseSettings):
     min_atr_pips: float = 4.0             # skip when ATR is below this (market too quiet)
     min_tp_spread_multiple: float = 3.0   # require take-profit distance >= this x current spread
 
-    # Shadow mode — when True the agent analyzes, forecasts, and logs the orders
-    # it WOULD place (SHADOW_ORDER audit) but executes nothing. Paused here until
-    # a real edge validates out-of-sample; trading blanket DHJ/BS disagreement is
-    # a coin flip that only pays spread. Flip to False (or POST /api/risk/shadow-mode)
-    # to resume live execution.
-    start_in_shadow_mode: bool = True
+    # Execution tier — how agent orders are executed while validation matures:
+    #   "shadow" → orders logged only, nothing executes
+    #   "micro"  → orders EXECUTE at drastically reduced size (real fill data,
+    #              pocket-change risk) while the ensemble validates out-of-sample
+    #   "full"   → normal sizing (only once a signal clears the OOS bar)
+    execution_tier: str = "micro"
+    micro_size_factor: float = 0.10        # scale agent order size to 10% of requested
+    micro_max_notional: float = 500.0      # hard cap per position (USD notional)
+    micro_daily_loss_limit: float = 25.0   # stop opening new positions past -$25 on the day
 
     # ── Per-pair edge map (shadow validation) ─────────────────────────────────
     # Conditional edges found in the forecast log: per pair, whether to trade

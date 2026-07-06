@@ -127,6 +127,26 @@ class OrderService:
         _ind        = market_data.calculate_indicators(pair)
         atr_pips    = _ind.get("atr_pips") if _ind else None
 
+        # ── Micro-tier daily loss budget (agent orders only) ───────────────────
+        # A hard experiment budget independent of the 3% account limit: once the
+        # day is down by micro_daily_loss_limit, no new entries until tomorrow.
+        if source == "agent" and settings.execution_tier == "micro":
+            _st = await portfolio_service.get_state()
+            if _st["daily_pnl"] <= -settings.micro_daily_loss_limit:
+                _reason = (
+                    f"Micro-tier daily loss budget exhausted "
+                    f"(daily P&L {_st['daily_pnl']:.2f} <= -{settings.micro_daily_loss_limit:.0f}) "
+                    f"— no new entries until the next trading day"
+                )
+                logger.warning("Order BLOCKED: %s", _reason)
+                await _write_audit(
+                    source=source, event_type="ORDER_REJECT",
+                    pair=pair, direction=direction, size=size,
+                    entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                    gate_allowed=False, gate_reason=_reason,
+                )
+                return False, f"Order blocked: {_reason}", None
+
         # ── Signal-quality gate (mandatory, LLM cannot bypass) ────────────────
         sig_decision = risk_gate.approve_signal(pair=pair, direction=direction, source=source)
         if not sig_decision.allowed:
@@ -187,6 +207,24 @@ class OrderService:
                 details={"spread_pips": spread, "data_age_s": round(data_age, 1), "shadow": True},
             )
             return True, f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f}", None
+
+        # ── Micro-tier size scaling (agent orders only) ─────────────────────────
+        # Execute for real but at data-gathering size: micro_size_factor of the
+        # requested units, hard-capped at micro_max_notional USD. Gives genuine
+        # fill/slippage/spread data while the strategy validates out-of-sample.
+        if source == "agent" and settings.execution_tier == "micro":
+            _cap_units = (
+                settings.micro_max_notional
+                if pair in _USD_BASE_PAIRS
+                else settings.micro_max_notional / entry_price
+            )
+            _scaled = max(1.0, round(min(size * settings.micro_size_factor, _cap_units)))
+            if _scaled < size:
+                logger.info(
+                    "Micro tier: scaling %s %s from %.0f to %.0f units",
+                    direction, pair, size, _scaled,
+                )
+                size = _scaled
 
         # ── OANDA live execution ───────────────────────────────────────────────
         oanda_trade_id: Optional[str] = None

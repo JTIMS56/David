@@ -210,11 +210,19 @@ async def lifespan(app: FastAPI):
     risk_gate._min_atr_pips           = settings.min_atr_pips
     risk_gate._min_tp_spread_multiple = settings.min_tp_spread_multiple
 
-    # Pause live execution until an edge validates out-of-sample. Forecasts and
-    # analysis continue (validation keeps running); orders are logged, not placed.
-    if settings.start_in_shadow_mode:
+    # Execution tier: shadow (log only) / micro (real fills, ~10% size,
+    # capped notional, daily loss budget) / full.
+    if settings.execution_tier == "shadow":
         risk_gate.set_shadow_mode(True)
         logger.warning("SHADOW MODE active at startup — orders logged but NOT executed")
+    else:
+        logger.warning(
+            "Execution tier: %s%s",
+            settings.execution_tier,
+            (f" (size x{settings.micro_size_factor:.2f}, cap ${settings.micro_max_notional:.0f}, "
+             f"daily budget -${settings.micro_daily_loss_limit:.0f})")
+            if settings.execution_tier == "micro" else "",
+        )
 
     # Wire up order service broadcast
     order_service.set_broadcast(manager.broadcast)

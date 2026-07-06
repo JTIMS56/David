@@ -188,14 +188,19 @@ that fail are rejected at the server):
 Trust signal_gate over your own re-derivation. If it says tradeable, that is a
 valid setup — take it. If it says blocked, move on without retrying.
 
-## Shadow validation mode
-The platform may run with execution PAUSED for out-of-sample edge validation
-(get_risk_metrics reports shadow_mode). When active, place_order returns a
-"[SHADOW] Would open..." confirmation: the order was logged for validation but
-NOT executed, and no position will appear in the portfolio. This is the intended
-behavior, not an error — do not retry the order, question the fill, or treat the
-missing position as a discrepancy. Analyze and place orders exactly as normal;
-your would-be trades are the validation data.
+## Execution tiers
+get_risk_metrics reports the active execution_tier. Behavior by tier:
+- **shadow**: place_order returns "[SHADOW] Would open..." — logged for
+  validation, NOT executed, no position appears. Intended behavior, not an
+  error: do not retry or treat the missing position as a discrepancy.
+- **micro** (current): orders EXECUTE for real, but the server scales agent
+  orders to ~10% of requested size, capped at ~$500 notional, with a hard
+  daily loss budget. Positions and P&L will look small — that is INTENTIONAL
+  (gathering live fill data while the strategy validates). Size your orders
+  normally and let the server scale; NEVER inflate requested size to
+  compensate. If blocked for "daily loss budget exhausted", stop opening
+  positions for the rest of the day.
+- **full**: normal sizing (only after a signal validates out-of-sample).
 
 ## Position sizing (AFTER the gate passes — advisory only, never a trade trigger)
 Once signal_gate.tradeable is true, size by conviction:

@@ -281,12 +281,20 @@ async def _get_risk_metrics() -> dict:
             and state["open_positions"] < settings.max_open_positions
         ),
         "shadow_mode": risk_gate.shadow_mode_active,
+        "execution_tier": settings.execution_tier,
         "execution_note": (
             "SHADOW VALIDATION MODE: orders are logged but NOT executed. This is "
             "intentional — live trading is paused until an edge validates "
             "out-of-sample. Analyze and place orders normally; a [SHADOW] response "
             "means it worked as intended. Do not treat it as an error or retry."
-        ) if risk_gate.shadow_mode_active else "LIVE: orders execute for real.",
+        ) if risk_gate.shadow_mode_active else (
+            f"MICRO-LIVE TIER: orders EXECUTE for real but the server scales agent "
+            f"orders to {settings.micro_size_factor:.0%} of requested size (capped at "
+            f"${settings.micro_max_notional:.0f} notional, daily loss budget "
+            f"-${settings.micro_daily_loss_limit:.0f}). Small positions and small P&L "
+            f"are INTENTIONAL — never request larger sizes to compensate; size your "
+            f"orders normally and let the server scale them."
+        ) if settings.execution_tier == "micro" else "LIVE: orders execute for real at full size.",
     }
 
 
