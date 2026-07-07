@@ -199,6 +199,15 @@ async def lifespan(app: FastAPI):
     # Market data
     await market_data.start()
     logger.info(f"Market data started (mode={settings.market_data_mode})")
+    if settings.trading_mode == "oanda" and settings.market_data_mode != "oanda":
+        logger.critical(
+            "MISCONFIGURATION: trading_mode=oanda but market_data_mode=%s — the "
+            "internal price feed will drift from real OANDA prices (fake slippage, "
+            "phantom stop triggers, polluted forecasts). Set MARKET_DATA_MODE=oanda. "
+            "Order entry and SL/TP monitoring now quote OANDA directly as a "
+            "safeguard, but charts/indicators/forecasts still use the drifting feed.",
+            settings.market_data_mode,
+        )
 
     # Wire up portfolio → risk manager
     _risk_mod.risk_manager = RiskManager(portfolio_service)

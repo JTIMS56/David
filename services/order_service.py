@@ -118,9 +118,31 @@ class OrderService:
             )
             return False, f"No price available for {pair}", None
 
-        entry_price = bar.ask if direction == "BUY" else bar.bid
-        spread      = _spread_pips(pair, bar.bid, bar.ask)
-        data_age    = _data_age_seconds(bar)
+        # When trading on OANDA, quote from OANDA. The internal feed can run in
+        # simulation/hybrid modes that drift 10-20p from real prices — quoting
+        # from it produced fake "slippage" vs real fills and mis-anchored SL/TP.
+        _real_quote = None
+        if settings.trading_mode == "oanda" and settings.oanda_api_key:
+            _pm = await self._oanda_price_map()
+            _real_quote = _pm.get(pair) if _pm else None
+            if _real_quote is None and source == "agent":
+                await _write_audit(
+                    source=source, event_type="ORDER_REJECT",
+                    pair=pair, direction=direction, size=size, stop_loss=stop_loss,
+                    gate_allowed=False,
+                    gate_reason="Real OANDA quote unavailable — refusing to enter on unverified prices",
+                )
+                return False, f"Order blocked: real OANDA quote for {pair} unavailable", None
+
+        if _real_quote is not None:
+            _qbid, _qask = _real_quote
+            entry_price = _qask if direction == "BUY" else _qbid
+            spread      = _spread_pips(pair, _qbid, _qask)
+            data_age    = 0.0
+        else:
+            entry_price = bar.ask if direction == "BUY" else bar.bid
+            spread      = _spread_pips(pair, bar.bid, bar.ask)
+            data_age    = _data_age_seconds(bar)
         s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
         _pip        = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
         tp_pips     = abs(take_profit - entry_price) / _pip if take_profit is not None else None
@@ -541,9 +563,38 @@ class OrderService:
         logger.info("Position closed: id=%d action=%s pnl=%.2f", position_id, action, pnl)
         return True, f"Closed position {position_id} @ {close_price:.5f}, PnL: {pnl:.2f}", pnl
 
+    # ── Real-price sourcing for live monitoring ───────────────────────────────
+
+    async def _oanda_price_map(self) -> Optional[dict]:
+        """
+        Fresh bid/ask per pair straight from OANDA, for use by the monitor and
+        order entry when trading_mode is oanda.
+
+        The internal market_data feed can run in simulation/hybrid modes whose
+        prices drift 10-20 pips from reality; acting on those while positions
+        fill at real OANDA prices caused phantom SL triggers, instant
+        breakeven-stop closes, and fake "slippage". When we trade on OANDA we
+        must decide on OANDA prices. Returns {pair: (bid, ask)} or None when
+        unavailable (then callers must NOT act on unverified internal prices).
+        """
+        if not (settings.trading_mode == "oanda" and settings.oanda_api_key):
+            return None
+        try:
+            from services.oanda_client import oanda_client, OANDA_TO_PAIR
+            data = await oanda_client.get_prices(list(PAIR_CONFIG.keys()))
+            out: dict = {}
+            for p in data.get("prices", []):
+                pair = OANDA_TO_PAIR.get(p.get("instrument", ""))
+                if pair and p.get("bids") and p.get("asks"):
+                    out[pair] = (float(p["bids"][0]["price"]), float(p["asks"][0]["price"]))
+            return out or None
+        except Exception as exc:
+            logger.warning("OANDA monitor price fetch failed: %s", exc)
+            return None
+
     # ── Trailing stop / breakeven ─────────────────────────────────────────────
 
-    async def update_trailing_stops(self) -> None:
+    async def update_trailing_stops(self, price_map: Optional[dict] = None) -> None:
         """
         Ratchet protective stops on winning positions so they cannot round-trip
         back into a loss.  Two stages, both moving the stop only in the
@@ -570,12 +621,19 @@ class OrderService:
             dirty = False
 
             for pos in positions:
-                bar = market_data.get_price(pos.pair)
-                if bar is None:
-                    continue
+                if price_map is not None:
+                    quote = price_map.get(pos.pair)
+                    if quote is None:
+                        continue
+                    _bid, _ask = quote
+                else:
+                    bar = market_data.get_price(pos.pair)
+                    if bar is None:
+                        continue
+                    _bid, _ask = bar.bid, bar.ask
                 pip = PAIR_CONFIG.get(pos.pair, {}).get("pip", 0.0001)
                 # Mark against the price we'd exit at (the protective-stop side).
-                current = bar.bid if pos.direction == "BUY" else bar.ask
+                current = _bid if pos.direction == "BUY" else _ask
                 profit_pips = (
                     (current - pos.entry_price) / pip
                     if pos.direction == "BUY"
@@ -637,14 +695,21 @@ class OrderService:
 
     # ── SL/TP monitoring ──────────────────────────────────────────────────────
 
-    async def check_sl_tp(self) -> None:
+    async def check_sl_tp(self, price_map: Optional[dict] = None) -> None:
         positions = await portfolio_service.get_open_positions()
         for pos in positions:
-            bar = market_data.get_price(pos.pair)
-            if bar is None:
-                continue
+            if price_map is not None:
+                quote = price_map.get(pos.pair)
+                if quote is None:
+                    continue
+                _bid, _ask = quote
+            else:
+                bar = market_data.get_price(pos.pair)
+                if bar is None:
+                    continue
+                _bid, _ask = bar.bid, bar.ask
 
-            current = bar.bid if pos.direction == "BUY" else bar.ask
+            current = _bid if pos.direction == "BUY" else _ask
             triggered_action: Optional[str] = None
 
             if pos.stop_loss is not None:
@@ -685,11 +750,21 @@ class OrderService:
                 )
 
     async def _monitor_loop(self, interval: float = 3.0) -> None:
+        _is_oanda = settings.trading_mode == "oanda" and bool(settings.oanda_api_key)
         while True:
             try:
                 await portfolio_service.update_unrealised_pnl()
-                await self.update_trailing_stops()
-                await self.check_sl_tp()
+                # When trading on OANDA, stop/TP decisions MUST use real OANDA
+                # prices — internal feed modes can drift 10-20p from reality,
+                # which armed phantom breakeven stops and closed positions
+                # instantly. If real prices are unavailable this tick, skip
+                # trigger logic entirely (broker-side SL/TP still protects).
+                price_map = await self._oanda_price_map() if _is_oanda else None
+                if _is_oanda and price_map is None:
+                    logger.debug("Monitor tick skipped: OANDA prices unavailable")
+                else:
+                    await self.update_trailing_stops(price_map)
+                    await self.check_sl_tp(price_map)
                 # Drawdown circuit-breaker
                 state = await portfolio_service.get_state()
                 if risk_gate.check_drawdown(state["drawdown_pct"]):
