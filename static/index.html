@@ -202,7 +202,10 @@
 
       <!-- Open positions -->
       <div class="card">
-        <div class="card-title">Open Positions</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Open Positions</div>
+          <button class="decision-copy" id="btn-copy-positions" onclick="copyPositions()">Copy</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -498,9 +501,36 @@ async function fetchOandaBalance() {
   } catch (_) {}
 }
 
+let _lastPositions = [];
+
+function copyPositions() {
+  if (!_lastPositions.length) return;
+  const lines = [
+    `Open Positions — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    '',
+    '#      PAIR       DIR   SIZE      ENTRY        CURRENT      SL           TP           PNL       OPENED',
+    '─'.repeat(100),
+  ];
+  _lastPositions.forEach(p => {
+    const dp  = p.pair.includes('JPY') ? 3 : 5;
+    const pnl = (p.unrealised_pnl > 0 ? '+' : '') + p.unrealised_pnl.toFixed(2);
+    lines.push(
+      `${String(p.id).padEnd(6)} ${p.pair.padEnd(10)} ${p.direction.padEnd(5)} ` +
+      `${String(p.size.toLocaleString()).padEnd(9)} ${p.entry_price.toFixed(dp).padEnd(12)} ` +
+      `${p.current_price.toFixed(dp).padEnd(12)} ${(p.stop_loss ? p.stop_loss.toFixed(dp) : '—').padEnd(12)} ` +
+      `${(p.take_profit ? p.take_profit.toFixed(dp) : '—').padEnd(12)} ${pnl.padEnd(9)} ${relTime(p.opened_at)}`
+    );
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-positions');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
 async function fetchPositions() {
   const r = await apiFetch('/api/positions?status=open');
   const data = await r.json();
+  _lastPositions = data;
   const tbody = $('positions-tbody');
   if (!data.length) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No open positions</td></tr>';
