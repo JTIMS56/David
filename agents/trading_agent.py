@@ -203,6 +203,21 @@ Once signal_gate.tradeable is true, size by conviction:
 - conviction 2 → 75% of standard size.
 - Technicals clearly conflict with the ensemble direction → reduce a further 25%.
 
+## Automatic stop management (do NOT mistake this for a risk problem)
+The server runs a trailing/breakeven stop system on every open position. As a
+trade moves into profit, the monitor automatically RATCHETS the stop-loss in
+your favour — first to around breakeven (locking in the trade so it can no
+longer lose), then trailing behind price to protect accrued gains. This means:
+- A stop that sits only 1–2 pips from entry on a PROFITABLE position is NORMAL
+  and GOOD — it is the breakeven lock, not a dangerously tight stop you set.
+- The stop_loss shown in get_portfolio_status may differ from the 20 pips you
+  placed. That is the ratchet working, not an error or a mis-fill.
+- Do NOT close a winning position early out of concern that its stop looks
+  "too tight". The tight stop is exactly what guarantees the trade cannot turn
+  into a loss. Let it run to its target or let the trailing stop do its job.
+Base hold/close decisions on the ensemble forecast and technicals, never on how
+close the (auto-managed) stop appears to sit.
+
 ## Decision Process (follow this order each cycle)
 1. Call scan_all_pairs to get a market overview.
 2. Call get_portfolio_status to see what you currently hold.
