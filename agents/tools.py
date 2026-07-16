@@ -119,20 +119,32 @@ TOOL_DEFINITIONS = [
                     "type": "number",
                     "description": "Units to trade. Use get_risk_metrics to guide sizing.",
                 },
+                "stop_pips": {
+                    "type": "number",
+                    "description": (
+                        "PREFERRED: stop distance in pips. The server anchors the stop "
+                        "to the real entry quote at execution time, so price drift can "
+                        "never invalidate your geometry. Use with take_profit_pips."
+                    ),
+                },
+                "take_profit_pips": {
+                    "type": "number",
+                    "description": "Take-profit distance in pips (defaults to stop_pips x 1.6).",
+                },
                 "stop_loss": {
                     "type": "number",
-                    "description": "Stop-loss price (required).",
+                    "description": "Absolute stop-loss price. Legacy — prefer stop_pips.",
                 },
                 "take_profit": {
                     "type": "number",
-                    "description": "Take-profit price (recommended).",
+                    "description": "Absolute take-profit price. Legacy — prefer take_profit_pips.",
                 },
                 "reasoning": {
                     "type": "string",
                     "description": "Your analysis and reason for this trade.",
                 },
             },
-            "required": ["pair", "direction", "size", "stop_loss", "reasoning"],
+            "required": ["pair", "direction", "size", "reasoning"],
         },
     },
     {
@@ -302,19 +314,39 @@ async def _place_order(inputs: dict) -> dict:
     pair = inputs["pair"]
     direction = inputs["direction"]
     size = float(inputs["size"])
-    stop_loss = float(inputs["stop_loss"])
-    take_profit = inputs.get("take_profit")
-    if take_profit is not None:
-        take_profit = float(take_profit)
     reasoning = inputs.get("reasoning", "")
 
-    # Risk check
     bar = market_data.get_price(pair)
     if bar is None:
         return {"success": False, "message": f"No price for {pair}"}
-
     entry_price = bar.ask if direction == "BUY" else bar.bid
     pip = market_data.get_pip_size(pair)
+
+    # Pips-based geometry (PREFERRED): the server anchors SL/TP to the real
+    # entry quote at execution time, so price drift between the agent's data
+    # fetch and order placement can never invalidate the geometry.
+    stop_pips_req = inputs.get("stop_pips")
+    tp_pips_req = inputs.get("take_profit_pips")
+    if stop_pips_req is not None:
+        stop_pips_req = float(stop_pips_req)
+        tp_pips_req = float(tp_pips_req) if tp_pips_req is not None else round(stop_pips_req * 1.6, 1)
+        # provisional absolute prices from the current quote for the advisory
+        # risk check — open_position re-derives them from the real quote
+        if direction == "BUY":
+            stop_loss = round(entry_price - stop_pips_req * pip, 5)
+            take_profit = round(entry_price + tp_pips_req * pip, 5)
+        else:
+            stop_loss = round(entry_price + stop_pips_req * pip, 5)
+            take_profit = round(entry_price - tp_pips_req * pip, 5)
+    else:
+        if inputs.get("stop_loss") is None:
+            return {"success": False,
+                    "message": "A stop is required: pass stop_pips (preferred) or stop_loss."}
+        stop_loss = float(inputs["stop_loss"])
+        take_profit = inputs.get("take_profit")
+        if take_profit is not None:
+            take_profit = float(take_profit)
+
     current_stop_pips = round(abs(entry_price - stop_loss) / pip, 1) if stop_loss is not None else None
 
     check = await _risk_mod.risk_manager.check_new_order(
@@ -356,6 +388,8 @@ async def _place_order(inputs: dict) -> dict:
         take_profit=take_profit,
         reasoning=reasoning,
         source="agent",
+        stop_pips_req=stop_pips_req,
+        tp_pips_req=tp_pips_req if stop_pips_req is not None else None,
     )
     result = {"success": ok, "message": msg}
     if pos:

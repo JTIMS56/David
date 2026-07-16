@@ -108,6 +108,8 @@ class OrderService:
         take_profit: Optional[float] = None,
         reasoning: Optional[str] = None,
         source: str = "agent",   # "agent" | "human" | "sl_tp"
+        stop_pips_req: Optional[float] = None,   # pips-based geometry: SL/TP are
+        tp_pips_req: Optional[float] = None,     # re-anchored to the REAL entry quote
     ) -> Tuple[bool, str, Optional[Position]]:
         bar = market_data.get_price(pair)
         if bar is None:
@@ -143,6 +145,21 @@ class OrderService:
             entry_price = bar.ask if direction == "BUY" else bar.bid
             spread      = _spread_pips(pair, bar.bid, bar.ask)
             data_age    = _data_age_seconds(bar)
+
+        # Pips-based geometry: derive SL/TP from the entry quote we actually
+        # gate and fill against. Kills the fast-market race where prices drift
+        # between the agent's data fetch and order placement, invalidating
+        # absolute SL/TP levels (the cycle-#72 nine-rejection storm).
+        if stop_pips_req is not None:
+            _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+            _tp_pips = tp_pips_req if tp_pips_req is not None else stop_pips_req * 1.6
+            if direction == "BUY":
+                stop_loss   = round(entry_price - stop_pips_req * _pip, 5)
+                take_profit = round(entry_price + _tp_pips * _pip, 5)
+            else:
+                stop_loss   = round(entry_price + stop_pips_req * _pip, 5)
+                take_profit = round(entry_price - _tp_pips * _pip, 5)
+
         s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
         _pip        = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
         tp_pips     = abs(take_profit - entry_price) / _pip if take_profit is not None else None
