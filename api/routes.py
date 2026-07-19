@@ -1078,6 +1078,84 @@ async def feeds_status():
     }
 
 
+@router.get("/readiness")
+async def go_live_readiness():
+    """
+    Auto-computed Aug-1 go/no-go scorecard:
+      • Trading window (go_nogo_window_start, the exit-hysteresis era):
+        realized P&L, win rate, average win vs average loss.
+      • Forecast window (clean_data_start, the single-instance era):
+        ensemble conviction>=2 directional accuracy with Wilson lower bound.
+      • Feed health right now.
+    """
+    from models.orm import EnsembleForecastLog
+    from services import econ_calendar, sentiment
+    from services.oanda_client import PAIR_TO_OANDA
+
+    trade_start = datetime.fromisoformat(settings.go_nogo_window_start)
+    fc_start = datetime.fromisoformat(settings.clean_data_start)
+
+    async with AsyncSessionLocal() as db:
+        trades = (await db.execute(
+            select(Trade).where(
+                Trade.timestamp >= trade_start,
+                Trade.action.in_(("CLOSE", "SL_HIT", "TP_HIT")),
+            )
+        )).scalars().all()
+        elogs = (await db.execute(
+            select(EnsembleForecastLog).where(
+                EnsembleForecastLog.created_at >= fc_start,
+                EnsembleForecastLog.direction_correct.isnot(None),
+                EnsembleForecastLog.conviction >= 2,
+            )
+        )).scalars().all()
+
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    pnl_total = round(sum(t.pnl for t in trades), 2)
+    avg_win = round(sum(wins) / len(wins), 2) if wins else 0.0
+    avg_loss = round(sum(losses) / len(losses), 2) if losses else 0.0
+
+    clean = [e for e in elogs
+             if e.actual_move_pips is not None and abs(e.actual_move_pips) <= 200]
+    n = len(clean)
+    ok = sum(1 for e in clean if e.direction_correct)
+    acc = round(ok / n, 3) if n else None
+    lb = round(_wilson_lower_bound(ok, n), 3) if n else None
+
+    positioning_cached = sum(
+        1 for p in PAIR_TO_OANDA if sentiment.get_positioning(p)
+    )
+
+    criteria = {
+        "pnl_positive": pnl_total > 0,
+        "payoff_ratio_ok": bool(wins) and bool(losses) and avg_win >= abs(avg_loss),
+        "ensemble_acc_over_52": acc is not None and n >= 50 and acc > 0.52,
+        "feeds_healthy": positioning_cached >= 6 and len(econ_calendar._events) > 0,
+    }
+
+    return {
+        "as_of": datetime.utcnow().isoformat(),
+        "trading_window_since": settings.go_nogo_window_start,
+        "trades": {
+            "n": len(trades), "wins": len(wins), "losses": len(losses),
+            "win_rate": round(len(wins) / len(trades), 3) if trades else None,
+            "pnl_total": pnl_total, "avg_win": avg_win, "avg_loss": avg_loss,
+        },
+        "forecast_window_since": settings.clean_data_start,
+        "ensemble_conviction2plus": {
+            "n": n, "accuracy": acc, "wilson_lower_bound": lb,
+            "excluded_artifacts": len(elogs) - n,
+        },
+        "feeds": {
+            "positioning_pairs_cached": positioning_cached,
+            "calendar_events_loaded": len(econ_calendar._events),
+        },
+        "criteria": criteria,
+        "verdict": "GO" if all(criteria.values()) else "NOT YET — see criteria",
+    }
+
+
 # ── Model Registry ────────────────────────────────────────────────────────────
 
 @router.get("/registry")

@@ -222,6 +222,15 @@
         </div>
       </div>
 
+      <!-- Go-Live Readiness -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Go-Live Readiness (Aug 1)</div>
+          <button class="decision-copy" id="btn-copy-readiness" onclick="copyReadiness()">Copy</button>
+        </div>
+        <div id="readiness-body" style="font-size:12px;color:var(--muted)">Loading…</div>
+      </div>
+
       <!-- DHJ Forecast Accuracy -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -499,6 +508,36 @@ async function fetchOandaBalance() {
     $('m-unrealised').className = 'metric-sub ' + pnlClass(unreal);
     $('m-balance-label').textContent = `OANDA ${d.environment === 'live' ? 'Live' : 'Practice'} ${d.currency}`;
   } catch (_) {}
+}
+
+let _lastReadiness = null;
+
+async function fetchReadiness() {
+  try {
+    const r = await apiFetch('/api/readiness');
+    const d = await r.json();
+    _lastReadiness = d;
+    const t = d.trades, e = d.ensemble_conviction2plus, c = d.criteria;
+    const mark = ok => ok ? '<span class="pos">✓</span>' : '<span class="neg">✗</span>';
+    $('readiness-body').innerHTML = `
+      <div style="font-size:14px;font-weight:700;margin-bottom:6px;color:${d.verdict === 'GO' ? 'var(--green)' : 'var(--yellow)'}">${d.verdict}</div>
+      <div>${mark(c.pnl_positive)} P&L since ${d.trading_window_since}: <b class="${t.pnl_total >= 0 ? 'pos' : 'neg'}">$${t.pnl_total}</b>
+        (${t.wins}W / ${t.losses}L${t.win_rate !== null ? ', ' + Math.round(t.win_rate * 100) + '%' : ''})</div>
+      <div>${mark(c.payoff_ratio_ok)} Avg win $${t.avg_win} vs avg loss $${t.avg_loss}</div>
+      <div>${mark(c.ensemble_acc_over_52)} Ensemble conv-2+ accuracy: ${e.accuracy !== null ? (e.accuracy * 100).toFixed(1) + '% (n=' + e.n + ', LB ' + e.wilson_lower_bound + ')' : 'no data yet'}</div>
+      <div>${mark(c.feeds_healthy)} Feeds: ${d.feeds.positioning_pairs_cached}/8 positioning, ${d.feeds.calendar_events_loaded} calendar events</div>`;
+  } catch (err) { /* card is non-critical */ }
+}
+
+function copyReadiness() {
+  if (!_lastReadiness) return;
+  navigator.clipboard.writeText(
+    `Go-Live Readiness — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastReadiness, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-readiness');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
 }
 
 let _lastPositions = [];
@@ -849,9 +888,11 @@ updateClock();
     fetchDecisions(),
     fetchTotalPnL(),
     fetchForecastAccuracy(),
+    fetchReadiness(),
   ]);
   // Refresh every 10s
   setInterval(() => { fetchPositions(); fetchTrades(); fetchDecisions(); fetchTotalPnL(); }, 10_000);
+  setInterval(fetchReadiness, 60_000);
   // Refresh OANDA balance every 15s
   setInterval(() => { if (_tradingMode === 'oanda') fetchOandaBalance(); }, 15_000);
   // Refresh mode badge every 60s (rarely changes)

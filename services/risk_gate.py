@@ -29,6 +29,39 @@ def _dir_to_side(direction: str) -> str:
     return "BUY" if direction == "UP" else "SELL"
 
 
+def weekend_entry_blocked(now: Optional["datetime"] = None) -> bool:
+    """
+    True when new entries should be refused because the FX weekend close is
+    near or in progress: Friday from weekend_no_entry_from_hour_utc, all of
+    Saturday, and Sunday before the ~21:00 UTC market reopen.
+    """
+    from datetime import datetime, timezone
+    from config import settings
+    if not settings.weekend_flatten_enabled:
+        return False
+    now = now or datetime.now(timezone.utc)
+    wd = now.weekday()  # Mon=0 .. Sun=6
+    if wd == 4 and now.hour >= settings.weekend_no_entry_from_hour_utc:
+        return True
+    if wd == 5:
+        return True
+    return wd == 6 and now.hour < 21
+
+
+def weekend_flatten_due(now: Optional["datetime"] = None) -> bool:
+    """True during the Friday flatten window (flatten time -> market close)."""
+    from datetime import datetime, timezone
+    from config import settings
+    if not settings.weekend_flatten_enabled:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if now.weekday() != 4:
+        return False
+    minutes = now.hour * 60 + now.minute
+    start = settings.weekend_flatten_hour_utc * 60 + settings.weekend_flatten_minute_utc
+    return start <= minutes < 21 * 60 + 30
+
+
 @dataclass
 class GateDecision:
     allowed: bool
@@ -254,7 +287,17 @@ class RiskGate:
                 checks_run=checks,
             )
 
-        # 3. Shadow mode — gate passes but execution is skipped by OrderService
+        # 3. Weekend window — no new entries into the Friday close / weekend gap
+        checks.append("weekend_window")
+        if weekend_entry_blocked():
+            return GateDecision(
+                False,
+                "Weekend window: no new entries from Friday "
+                "20:00 UTC until Sunday market open (gap risk)",
+                checks_run=checks,
+            )
+
+        # 4. Shadow mode — gate passes but execution is skipped by OrderService
         checks.append("shadow_mode")
         if self._shadow_mode:
             return GateDecision(True, "Shadow mode: order logged but not executed", shadow=True, checks_run=checks)

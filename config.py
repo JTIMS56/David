@@ -87,6 +87,19 @@ class Settings(BaseSettings):
     }
     edge_map_cutoff: str = "2026-06-28"   # forecasts created after this are out-of-sample
 
+    # ── Weekend protection ────────────────────────────────────────────────────
+    # FX closes ~21:00 UTC Friday. Holding through the weekend exposes positions
+    # to Monday gap risk with no stop protection (gaps fill at the open price).
+    # No new entries from Friday 20:00 UTC; all positions flattened 20:30 UTC.
+    weekend_flatten_enabled: bool = True
+    weekend_no_entry_from_hour_utc: int = 20   # Friday cutoff for new entries
+    weekend_flatten_hour_utc: int = 20         # Friday flatten time (HH:MM)
+    weekend_flatten_minute_utc: int = 30
+
+    # ── Go-live readiness (Aug 1 go/no-go criteria windows) ───────────────────
+    go_nogo_window_start: str = "2026-07-18"   # exit-hysteresis era: trades judged from here
+    clean_data_start: str = "2026-07-08"       # single-instance era: forecasts judged from here
+
     # ── Crowd sentiment (OANDA position book) ─────────────────────────────────
     # Contrarian vote: fade the retail crowd when positioning is one-sided.
     positioning_fade_threshold: float = 65.0   # % of positions on one side to trigger a fade vote

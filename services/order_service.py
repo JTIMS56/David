@@ -782,6 +782,22 @@ class OrderService:
                 else:
                     await self.update_trailing_stops(price_map)
                     await self.check_sl_tp(price_map)
+
+                # Weekend flatten: close everything before the Friday close so
+                # no position rides the weekend gap without stop protection.
+                from services.risk_gate import weekend_flatten_due
+                if weekend_flatten_due():
+                    for pos in await portfolio_service.get_open_positions():
+                        ok, msg, pnl = await self.close_position(
+                            pos.id,
+                            reasoning="Weekend flatten: closing before Friday "
+                                      "market close (Monday gap risk)",
+                            source="sl_tp",
+                        )
+                        logger.warning(
+                            "Weekend flatten [%s pos %d]: %s (pnl %.2f)",
+                            pos.pair, pos.id, "closed" if ok else msg, pnl,
+                        )
                 # Drawdown circuit-breaker
                 state = await portfolio_service.get_state()
                 if risk_gate.check_drawdown(state["drawdown_pct"]):
