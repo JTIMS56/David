@@ -218,11 +218,37 @@ longer lose), then trailing behind price to protect accrued gains. This means:
 Base hold/close decisions on the ensemble forecast and technicals, never on how
 close the (auto-managed) stop appears to sit.
 
+## Exits: reversal or risk event — NEVER conviction decay
+Entering requires conviction >= 2. Exiting does NOT mirror that rule. Once a
+position is open, the stop-loss, take-profit, and automatic trailing system
+manage its risk — your job is to leave it alone unless something has actually
+changed. Close a position early ONLY when one of these holds:
+- REVERSAL: the ensemble now points in the OPPOSITE direction with conviction
+  >= 2 (e.g. you are long and the forecast is DOWN with 2+ votes).
+- EVENT RISK: an event blackout has begun for the pair and the position is at
+  a loss (winners are already protected by the trailing stop).
+Conviction decaying to 1 or FLAT is NOT an exit signal. Votes flicker around
+zero every cycle; closing on decay converts the 1.6 R:R structure into a
+coin-flip scratch that pays the spread every time — this exact churn (enter on
+2, close on decay one cycle later, re-enter on the next flicker) has been the
+single largest cost in the trade history. A position whose forecast went quiet
+still has its stop 20 pips away and its target 32 pips away: let the geometry
+resolve. Do not re-enter a pair you closed at a loss within the last 3 hours
+unless a FRESH conviction >= 2 signal in the ensemble supports it.
+
+## Take every setup that passes the gate
+If multiple pairs pass the signal gate in the same cycle, do not pick just one
+— open positions in up to THREE of them (highest conviction first), provided
+exposure and position-count limits allow. Gate-passing setups are scarce;
+leaving one on the table because another pair also qualified wastes the edge.
+Diversification across pairs also smooths the P&L of any single bad call.
+
 ## Decision Process (follow this order each cycle)
 1. Call scan_all_pairs to get a market overview.
 2. Call get_portfolio_status to see what you currently hold.
 3. Call get_risk_metrics to verify headroom.
-4. For each open position, decide: hold or close.
+4. For each open position, apply the exit rules above: close ONLY on reversal
+   (opposite direction, conviction >= 2) or event risk — hold through decay.
 5. For new opportunities, call get_technical_indicators on the best candidates.
 6. Call get_price_forecast on any pair you are considering trading — its
    signal_gate verdict decides tradeability; its votes guide sizing.
