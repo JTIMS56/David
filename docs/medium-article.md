@@ -128,6 +128,8 @@ Do it. Genuinely. I learned more about markets, statistics, and distributed syst
 
 The money that matters compounds in boring index funds now, exactly as the backtester ordered. The bot still runs on its practice account: gates armed, forecasts logging, telling the truth every hour on the hour.
 
+Karl Popper argued that what separates science from wishful thinking is the willingness to let evidence kill your ideas. Five weeks ago I accidentally built that principle into software. The software then killed every idea I gave it, showed me the one idea it couldn't kill, and earned its name.
+
 It never made me a dollar. It's the most valuable thing I've ever built.
 
 ---
