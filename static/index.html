@@ -231,6 +231,20 @@
         <div id="readiness-body" style="font-size:12px;color:var(--muted)">Loading…</div>
       </div>
 
+      <!-- Carry+Trend Backtest -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Carry+Trend Backtest (multi-week model)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-backtest" onclick="runBacktest()">Run</button>
+            <button class="decision-copy" id="btn-copy-backtest" onclick="copyBacktest()">Copy</button>
+          </div>
+        </div>
+        <div id="backtest-body" style="font-size:12px;color:var(--muted)">
+          Press Run to backtest the weekly carry+momentum portfolio over ~15 years of OANDA daily candles (takes ~10s).
+        </div>
+      </div>
+
       <!-- DHJ Forecast Accuracy -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -508,6 +522,50 @@ async function fetchOandaBalance() {
     $('m-unrealised').className = 'metric-sub ' + pnlClass(unreal);
     $('m-balance-label').textContent = `OANDA ${d.environment === 'live' ? 'Live' : 'Practice'} ${d.currency}`;
   } catch (_) {}
+}
+
+let _lastBacktest = null;
+
+async function runBacktest() {
+  const btn = $('btn-run-backtest');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/backtest/carry-trend?refresh=true');
+    const d = await r.json();
+    _lastBacktest = d;
+    if (d.error || d.detail) {
+      $('backtest-body').innerHTML = `<span class="neg">${d.error || d.detail}</span>`;
+      return;
+    }
+    const h = d.headline, a = d.attribution_pct_per_year;
+    const years = Object.entries(d.yearly_returns_pct)
+      .map(([y, v]) => `${y}: <b class="${v >= 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}${v}%</b>`)
+      .join(' · ');
+    $('backtest-body').innerHTML = `
+      <div style="font-size:14px;margin-bottom:6px">
+        <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
+        &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
+        &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
+        &nbsp;|&nbsp; ${d.window.years}y → <b>${h.final_multiple}×</b></div>
+      <div style="margin-bottom:6px">Carry financing: ${a.financing_carry}%/y · Spread costs: ${a.spread_costs}%/y
+        · Vol ${h.ann_vol_pct}% · ${d.window.start} → ${d.window.end}</div>
+      <div style="line-height:1.8">${years}</div>`;
+  } catch (err) {
+    $('backtest-body').innerHTML = `<span class="neg">Backtest failed: ${err}</span>`;
+  } finally {
+    btn.textContent = 'Run'; btn.disabled = false;
+  }
+}
+
+function copyBacktest() {
+  if (!_lastBacktest) return;
+  navigator.clipboard.writeText(
+    `Carry+Trend Backtest — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastBacktest, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-backtest');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
 }
 
 let _lastReadiness = null;

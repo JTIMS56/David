@@ -132,6 +132,34 @@ class OandaClient:
             "time": book.get("time", ""),
         }
 
+    # ── Historical candles (for backtesting) ─────────────────────────────────
+
+    async def get_daily_candles(self, oanda_instrument: str, count: int = 3800) -> list:
+        """
+        Fetch up to `count` daily mid-price candles (OANDA max 5000/request).
+
+        GET /v3/instruments/{instrument}/candles?granularity=D&price=M&count=N
+
+        Returns [{"date": "YYYY-MM-DD", "close": float}, ...] oldest-first,
+        complete candles only. Raises on missing credentials or API errors.
+        """
+        if not settings.oanda_api_key:
+            raise RuntimeError("OANDA_API_KEY must be set for historical candles")
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": "D", "price": "M", "count": str(min(count, 5000))}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            out = []
+            for c in resp.json().get("candles", []):
+                if c.get("complete"):
+                    out.append({
+                        "date": c["time"][:10],
+                        "close": float(c["mid"]["c"]),
+                    })
+            return out
+
     # ── Order execution ───────────────────────────────────────────────────────
 
     async def place_market_order(

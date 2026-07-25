@@ -1156,6 +1156,46 @@ async def go_live_readiness():
     }
 
 
+_backtest_cache: dict = {}
+
+
+@router.get("/backtest/carry-trend")
+async def backtest_carry_trend(refresh: bool = Query(False)):
+    """
+    Run the multi-week carry+trend backtest over ~15 years of OANDA daily
+    candles (fetched live, one request per pair). Cached until refresh=true.
+    """
+    global _backtest_cache
+    if _backtest_cache and not refresh:
+        return _backtest_cache
+
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services.backtest import run_carry_trend
+
+    candles, fetch_errors = {}, {}
+    for pair, instrument in PAIR_TO_OANDA.items():
+        try:
+            series = await oanda_client.get_daily_candles(instrument, count=3800)
+            if len(series) > 200:
+                candles[pair] = series
+        except Exception as exc:
+            fetch_errors[pair] = str(exc)[:120]
+
+    if not candles:
+        raise HTTPException(502, f"No candle data fetched: {fetch_errors}")
+
+    result = run_carry_trend(candles)
+    result["candles_fetched"] = {p: len(c) for p, c in candles.items()}
+    if fetch_errors:
+        result["fetch_errors"] = fetch_errors
+    result["computed_at"] = datetime.utcnow().isoformat()
+    _backtest_cache = result
+    return result
+
+
 # ── Model Registry ────────────────────────────────────────────────────────────
 
 @router.get("/registry")
