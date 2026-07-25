@@ -1157,6 +1157,47 @@ async def go_live_readiness():
 
 
 _backtest_cache: dict = {}
+_index_backtest_cache: dict = {}
+
+
+@router.get("/backtest/index-trend")
+async def backtest_index_trend(refresh: bool = Query(False)):
+    """
+    Backtest the documented index/metals premia on OANDA CFD candles:
+    buy-and-hold baseline, 12m momentum long/flat, and long/short.
+    """
+    global _index_backtest_cache
+    if _index_backtest_cache and not refresh:
+        return _index_backtest_cache
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    from services.oanda_client import oanda_client
+    from services.backtest import run_index_trend, INDEX_META
+
+    candles, fetch_errors = {}, {}
+    for sym, meta in INDEX_META.items():
+        try:
+            series = await oanda_client.get_daily_candles(meta["oanda"], count=3800)
+            if len(series) > 400:
+                candles[sym] = series
+        except Exception as exc:
+            fetch_errors[sym] = str(exc)[:120]
+
+    if not candles:
+        raise HTTPException(502, f"No candle data fetched: {fetch_errors}")
+
+    result = {
+        "buy_hold": run_index_trend(candles, mode="buy_hold"),
+        "momentum_long_flat": run_index_trend(candles, mode="long_flat"),
+        "momentum_long_short": run_index_trend(candles, mode="long_short"),
+        "candles_fetched": {s: len(c) for s, c in candles.items()},
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if fetch_errors:
+        result["fetch_errors"] = fetch_errors
+    _index_backtest_cache = result
+    return result
 
 
 @router.get("/backtest/carry-trend")

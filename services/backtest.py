@@ -96,6 +96,130 @@ def _carry_diff(pair: str, year: int) -> float:
     return _rate(base, year) - _rate(quote, year)
 
 
+# ── Index / metals universe (OANDA CFDs) ─────────────────────────────────────
+# div_yield: approximate long-run dividend yield (pct/yr) credited to long CFD
+# holders. DE30 tracks the DAX performance index (dividends already in price).
+# spread_frac: conservative full spread as a fraction of price.
+INDEX_META: Dict[str, dict] = {
+    "SPX500": {"oanda": "SPX500_USD", "ccy": "USD", "div_yield": 1.8, "spread_frac": 0.0003},
+    "NAS100": {"oanda": "NAS100_USD", "ccy": "USD", "div_yield": 0.8, "spread_frac": 0.0003},
+    "US30":   {"oanda": "US30_USD",   "ccy": "USD", "div_yield": 2.0, "spread_frac": 0.0003},
+    "JP225":  {"oanda": "JP225_USD",  "ccy": "USD", "div_yield": 1.8, "spread_frac": 0.0005},
+    "UK100":  {"oanda": "UK100_GBP",  "ccy": "GBP", "div_yield": 3.6, "spread_frac": 0.0004},
+    "DE30":   {"oanda": "DE30_EUR",   "ccy": "EUR", "div_yield": 0.0, "spread_frac": 0.0004},
+    "EU50":   {"oanda": "EU50_EUR",   "ccy": "EUR", "div_yield": 3.0, "spread_frac": 0.0004},
+    "XAU":    {"oanda": "XAU_USD",    "ccy": "USD", "div_yield": 0.0, "spread_frac": 0.0003},
+    "XAG":    {"oanda": "XAG_USD",    "ccy": "USD", "div_yield": 0.0, "spread_frac": 0.0008},
+}
+CFD_ADMIN_FEE_PCT = 1.2   # broker financing markup on CFD positions, pct/yr
+
+
+def _cfd_financing_daily(sym: str, year: int, pos: float) -> float:
+    """
+    Daily carry of a CFD position as a return fraction:
+    long: + dividends − (policy rate + admin fee)
+    short: − dividends + policy rate − admin fee   (fee is paid either way)
+    """
+    meta = INDEX_META[sym]
+    div = meta["div_yield"]
+    rate = _rate(meta["ccy"], year)
+    fee = CFD_ADMIN_FEE_PCT
+    return (pos * (div - rate) - abs(pos) * fee) / 100.0 / 365.0
+
+
+def run_index_trend(
+    candles: Dict[str, List[dict]],
+    mode: str = "long_flat",         # "buy_hold" | "long_flat" | "long_short"
+    trend_lookback: int = 252,       # 12-month momentum (literature standard)
+    vol_lookback: int = 20,
+    rebalance_every: int = 5,
+    target_pos_vol: float = 0.05,    # per-asset vol target (equities correlate)
+    max_pos: float = 1.0,
+) -> dict:
+    """
+    Time-series momentum on index/metals CFDs (Moskowitz-Ooi-Pedersen family):
+      buy_hold   -> always long (equity-risk-premium baseline)
+      long_flat  -> long when 12m return > 0, else flat
+      long_short -> long/short by 12m return sign
+    Vol-targeted, CFD financing (rate + admin fee vs dividends) and spread
+    costs always on, no lookahead.
+    """
+    daily: Dict[str, List[float]] = {}
+    dates_by_sym: Dict[str, List[str]] = {}
+    tot_cost = tot_fin = 0.0
+
+    for sym, series in candles.items():
+        if sym not in INDEX_META:
+            continue
+        closes = [c["close"] for c in series]
+        dates = [c["date"] for c in series]
+        n = len(closes)
+        if n < trend_lookback + vol_lookback + 10:
+            continue
+        spread_frac = INDEX_META[sym]["spread_frac"]
+
+        rets: List[float] = []
+        out_dates: List[str] = []
+        pos = 0.0
+        start = trend_lookback + vol_lookback
+
+        for t in range(start, n - 1):
+            if (t - start) % rebalance_every == 0:
+                if mode == "buy_hold":
+                    direction = 1
+                else:
+                    mom = closes[t] / closes[t - trend_lookback] - 1.0
+                    if mode == "long_flat":
+                        direction = 1 if mom > 0 else 0
+                    else:
+                        direction = 1 if mom > 0 else -1 if mom < 0 else 0
+                window = [closes[i] / closes[i - 1] - 1.0
+                          for i in range(t - vol_lookback + 1, t + 1)]
+                mu = sum(window) / len(window)
+                var = sum((r - mu) ** 2 for r in window) / len(window)
+                av = math.sqrt(var) * math.sqrt(252)
+                size = min(max_pos, target_pos_vol / av) if av > 1e-6 else 0.0
+                new_pos = direction * size
+                cost = abs(new_pos - pos) * spread_frac
+                tot_cost += cost
+                pos = new_pos
+            else:
+                cost = 0.0
+
+            spot_ret = closes[t + 1] / closes[t] - 1.0
+            fin = _cfd_financing_daily(sym, int(dates[t][:4]), pos)
+            tot_fin += fin
+            rets.append(pos * spot_ret + fin - cost)
+            out_dates.append(dates[t + 1])
+
+        daily[sym] = rets
+        dates_by_sym[sym] = out_dates
+
+    if not daily:
+        return {"error": "insufficient candle data for index universe"}
+
+    all_dates = sorted(set(d for ds in dates_by_sym.values() for d in ds))
+    by_date: Dict[str, List[float]] = {d: [] for d in all_dates}
+    for sym, rets in daily.items():
+        for d, r in zip(dates_by_sym[sym], rets):
+            by_date[d].append(r)
+    n_assets = len(daily)
+    port = [sum(by_date[d]) / n_assets for d in all_dates if by_date[d]]
+
+    years = len(port) / 252.0
+    out = _summarize(all_dates, port,
+                     cost_per_year=(tot_cost / n_assets) / years,
+                     fin_per_year=(tot_fin / n_assets) / years)
+    out["params"] = {
+        "mode": mode, "universe": sorted(daily.keys()),
+        "trend_lookback_days": trend_lookback,
+        "rebalance_every_days": rebalance_every,
+        "target_pos_vol": target_pos_vol,
+        "cfd_admin_fee_pct": CFD_ADMIN_FEE_PCT,
+    }
+    return out
+
+
 def _summarize(all_dates: List[str], port: List[float],
                cost_per_year: float, fin_per_year: float) -> dict:
     """Shared metrics block: equity curve, CAGR, Sharpe, drawdown, yearly table."""

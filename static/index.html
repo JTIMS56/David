@@ -245,6 +245,20 @@
         </div>
       </div>
 
+      <!-- Index/Gold Trend Backtest -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Index/Gold Backtest (equity premium + momentum)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-idxbt" onclick="runIndexBacktest()">Run</button>
+            <button class="decision-copy" id="btn-copy-idxbt" onclick="copyIndexBacktest()">Copy</button>
+          </div>
+        </div>
+        <div id="idxbt-body" style="font-size:12px;color:var(--muted)">
+          Press Run to backtest buy-and-hold and 12-month momentum on SPX500, NAS100, US30, JP225, UK100, DAX, EU50, gold and silver (~15y of OANDA CFD candles).
+        </div>
+      </div>
+
       <!-- DHJ Forecast Accuracy -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -574,6 +588,63 @@ function copyBacktest() {
     JSON.stringify(_lastBacktest, null, 2)
   ).then(() => {
     const btn = $('btn-copy-backtest');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastIndexBacktest = null;
+
+async function runIndexBacktest() {
+  const btn = $('btn-run-idxbt');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/backtest/index-trend?refresh=true');
+    const d = await r.json();
+    _lastIndexBacktest = d;
+    if (d.error || d.detail) {
+      $('idxbt-body').innerHTML = `<span class="neg">${d.error || d.detail}</span>`;
+      return;
+    }
+    const SECTIONS = [
+      ['buy_hold', 'Buy & hold (equity risk premium baseline)'],
+      ['momentum_long_flat', '12m momentum — long/flat'],
+      ['momentum_long_short', '12m momentum — long/short'],
+    ];
+    let html = '';
+    for (const [key, label] of SECTIONS) {
+      const s = d[key];
+      if (!s) continue;
+      if (s.error) { html += `<div style="margin-bottom:8px"><b>${label}:</b> <span class="neg">${s.error}</span></div>`; continue; }
+      const h = s.headline, a = s.attribution_pct_per_year;
+      html += `
+        <div style="margin-bottom:10px">
+          <div style="color:var(--text);font-weight:600;margin-bottom:2px">${label}</div>
+          <div style="font-size:13px">
+            <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
+            &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
+            &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
+            &nbsp;|&nbsp; ${s.window.years}y → <b>${h.final_multiple}×</b>
+            &nbsp;·&nbsp; financing ${a.financing_carry}%/y, costs ${a.spread_costs}%/y</div>
+        </div>`;
+    }
+    if (d.fetch_errors) {
+      html += `<div style="color:var(--yellow)">Unavailable: ${Object.keys(d.fetch_errors).join(', ')}</div>`;
+    }
+    $('idxbt-body').innerHTML = html || '<span class="neg">No results</span>';
+  } catch (err) {
+    $('idxbt-body').innerHTML = `<span class="neg">Backtest failed: ${err}</span>`;
+  } finally {
+    btn.textContent = 'Run'; btn.disabled = false;
+  }
+}
+
+function copyIndexBacktest() {
+  if (!_lastIndexBacktest) return;
+  navigator.clipboard.writeText(
+    `Index/Gold Backtest — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastIndexBacktest, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-idxbt');
     if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
   });
 }
