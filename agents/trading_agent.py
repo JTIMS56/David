@@ -290,6 +290,21 @@ class TradingAgent:
             logger.warning("Cycle already running — skipping concurrent request")
             return {"cycle": self._cycle, "skipped": True, "reason": "Another cycle is already running"}
 
+        # Weekend short-circuit: market closed + flat book = nothing an LLM
+        # cycle could do (prices frozen at Friday close, entry gate blocks all
+        # orders anyway). Guards the manual Run-Now path too — the scheduler
+        # already checks market hours, but this makes the skip unconditional.
+        if not self._is_market_open():
+            from services.portfolio_service import portfolio_service
+            if not await portfolio_service.get_open_positions():
+                logger.info("Market closed and book flat — cycle skipped (no LLM call)")
+                return {
+                    "cycle": self._cycle,
+                    "skipped": True,
+                    "reason": "FX market closed (weekend) and no open positions — "
+                              "next cycle after Sunday 22:00 UTC open",
+                }
+
         # Cross-worker mutex: attempt to INSERT the singleton CycleLock row.
         # SQLite's PRIMARY KEY uniqueness makes this atomic — the second worker's
         # INSERT fails if the first already holds the lock.
