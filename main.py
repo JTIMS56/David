@@ -36,7 +36,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
 )
-logger = logging.getLogger("david")
+logger = logging.getLogger("popper")
 
 # ── WebSocket connection manager ──────────────────────────────────────────────
 
