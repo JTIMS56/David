@@ -55,6 +55,33 @@ POLICY_RATES: Dict[str, Dict[int, float]] = {
 }
 
 
+# ── Extended universe for the cross-sectional test ───────────────────────────
+# The carry premium is documented in rate-dispersed crosses (JPY/CHF funding
+# legs), not USD-majors that all sat at zero 2012-2021. Spreads conservative.
+BT_EXTRA_META: Dict[str, dict] = {
+    "AUD/JPY": {"pip": 0.01,   "spread": 0.020},
+    "NZD/JPY": {"pip": 0.01,   "spread": 0.025},
+    "EUR/JPY": {"pip": 0.01,   "spread": 0.018},
+    "GBP/JPY": {"pip": 0.01,   "spread": 0.028},
+    "CAD/JPY": {"pip": 0.01,   "spread": 0.025},
+    "CHF/JPY": {"pip": 0.01,   "spread": 0.028},
+    "EUR/AUD": {"pip": 0.0001, "spread": 0.00028},
+    "EUR/NZD": {"pip": 0.0001, "spread": 0.00040},
+}
+BT_EXTRA_OANDA: Dict[str, str] = {
+    "AUD/JPY": "AUD_JPY", "NZD/JPY": "NZD_JPY", "EUR/JPY": "EUR_JPY",
+    "GBP/JPY": "GBP_JPY", "CAD/JPY": "CAD_JPY", "CHF/JPY": "CHF_JPY",
+    "EUR/AUD": "EUR_AUD", "EUR/NZD": "EUR_NZD",
+}
+
+
+def _pair_meta(pair: str) -> dict:
+    if pair in PAIR_CONFIG:
+        cfg = PAIR_CONFIG[pair]
+        return {"pip": cfg.get("pip", 0.0001), "spread": cfg.get("spread", 0.00015)}
+    return BT_EXTRA_META.get(pair, {"pip": 0.0001, "spread": 0.00030})
+
+
 def _rate(currency: str, year: int) -> float:
     table = POLICY_RATES.get(currency, {})
     if not table:
@@ -67,6 +94,133 @@ def _rate(currency: str, year: int) -> float:
 def _carry_diff(pair: str, year: int) -> float:
     base, quote = pair.split("/")
     return _rate(base, year) - _rate(quote, year)
+
+
+def _summarize(all_dates: List[str], port: List[float],
+               cost_per_year: float, fin_per_year: float) -> dict:
+    """Shared metrics block: equity curve, CAGR, Sharpe, drawdown, yearly table."""
+    n_days = len(port)
+    equity, peak, max_dd = 1.0, 1.0, 0.0
+    for r in port:
+        equity *= (1.0 + r)
+        peak = max(peak, equity)
+        max_dd = max(max_dd, 1.0 - equity / peak)
+    years = n_days / 252.0
+    cagr = equity ** (1.0 / years) - 1.0 if years > 0.2 and equity > 0 else 0.0
+    mean_r = sum(port) / n_days
+    var_r = sum((r - mean_r) ** 2 for r in port) / n_days
+    ann_vol = math.sqrt(var_r) * math.sqrt(252)
+    sharpe = (mean_r * 252) / ann_vol if ann_vol > 1e-9 else 0.0
+
+    yearly: Dict[str, float] = {}
+    y_start, cur_year, eq = 1.0, all_dates[0][:4], 1.0
+    for d, r in zip(all_dates, port):
+        if d[:4] != cur_year:
+            yearly[cur_year] = round((eq / y_start - 1.0) * 100, 2)
+            cur_year, y_start = d[:4], eq
+        eq *= (1.0 + r)
+    yearly[cur_year] = round((eq / y_start - 1.0) * 100, 2)
+
+    return {
+        "window": {"start": all_dates[0], "end": all_dates[-1],
+                   "trading_days": n_days, "years": round(years, 1)},
+        "headline": {
+            "final_multiple": round(equity, 3),
+            "cagr_pct": round(cagr * 100, 2),
+            "ann_vol_pct": round(ann_vol * 100, 2),
+            "sharpe": round(sharpe, 2),
+            "max_drawdown_pct": round(max_dd * 100, 2),
+        },
+        "attribution_pct_per_year": {
+            "financing_carry": round(fin_per_year * 100, 2),
+            "spread_costs": round(-cost_per_year * 100, 2),
+        },
+        "yearly_returns_pct": yearly,
+    }
+
+
+def run_cross_carry(
+    candles: Dict[str, List[dict]],
+    top_n: int = 3,
+    rebalance_every: int = 21,       # monthly (literature-standard for carry)
+    trend_lookback: int = 63,
+    vol_lookback: int = 20,
+    target_pair_vol: float = 0.0283,
+    max_pos: float = 1.0,
+    trend_veto: bool = False,
+) -> dict:
+    """
+    Classic cross-sectional carry portfolio: each month, rank all pairs by
+    rate differential; LONG the top_n (earn the differential), SHORT the
+    bottom_n (earn the inverted differential). Optional trend veto zeroes a
+    leg whose 63-day trend opposes it. Vol-targeted, costs and financing on,
+    no lookahead (decisions at t apply to the t -> t+1 return).
+    """
+    if len(candles) < 2 * top_n + 1:
+        return {"error": f"need > {2 * top_n} pairs, got {len(candles)}"}
+
+    date_sets = [set(c["date"] for c in s) for s in candles.values()]
+    common = sorted(set.intersection(*date_sets))
+    start = max(trend_lookback, vol_lookback) + 1
+    if len(common) < start + 100:
+        return {"error": "insufficient overlapping candle history"}
+
+    px = {p: {c["date"]: c["close"] for c in s} for p, s in candles.items()}
+    closes = {p: [px[p][d] for d in common] for p in candles}
+    n = len(common)
+    pairs = sorted(candles.keys())
+
+    pos: Dict[str, float] = {p: 0.0 for p in pairs}
+    port: List[float] = []
+    out_dates: List[str] = []
+    tot_cost = tot_fin = 0.0
+
+    for t in range(start, n - 1):
+        cost_t = 0.0
+        if (t - start) % rebalance_every == 0:
+            year = int(common[t][:4])
+            diffs = {p: _carry_diff(p, year) for p in pairs}
+            ranked = sorted(pairs, key=lambda p: diffs[p])
+            shorts, longs = set(ranked[:top_n]), set(ranked[-top_n:])
+            new_pos: Dict[str, float] = {}
+            for p in pairs:
+                d_ = 1 if p in longs else -1 if p in shorts else 0
+                if d_ and trend_veto:
+                    tr = closes[p][t] / closes[p][t - trend_lookback] - 1.0
+                    if (d_ > 0 and tr < 0) or (d_ < 0 and tr > 0):
+                        d_ = 0
+                window = [closes[p][i] / closes[p][i - 1] - 1.0
+                          for i in range(t - vol_lookback + 1, t + 1)]
+                mu = sum(window) / len(window)
+                var = sum((r - mu) ** 2 for r in window) / len(window)
+                av = math.sqrt(var) * math.sqrt(252)
+                size = min(max_pos, target_pair_vol / av) if av > 1e-6 else 0.0
+                np_ = d_ * size
+                cost_t += abs(np_ - pos[p]) * (_pair_meta(p)["spread"] / closes[p][t])
+                new_pos[p] = np_
+            pos = new_pos
+
+        year = int(common[t][:4])
+        r_t = 0.0
+        for p in pairs:
+            spot_ret = closes[p][t + 1] / closes[p][t] - 1.0
+            fin = pos[p] * (_carry_diff(p, year) / 100.0) / 365.0
+            tot_fin += fin
+            r_t += pos[p] * spot_ret + fin
+        r_t = (r_t - cost_t) / len(pairs)
+        tot_cost += cost_t / len(pairs)
+        port.append(r_t)
+        out_dates.append(common[t + 1])
+
+    years = len(port) / 252.0
+    out = _summarize(out_dates, port,
+                     cost_per_year=tot_cost / years,
+                     fin_per_year=(tot_fin / len(pairs)) / years)
+    out["params"] = {
+        "universe": pairs, "top_n": top_n, "rebalance_every_days": rebalance_every,
+        "trend_veto": trend_veto, "target_pair_vol": target_pair_vol,
+    }
+    return out
 
 
 def run_carry_trend(

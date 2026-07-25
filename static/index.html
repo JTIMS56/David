@@ -537,19 +537,29 @@ async function runBacktest() {
       $('backtest-body').innerHTML = `<span class="neg">${d.error || d.detail}</span>`;
       return;
     }
-    const h = d.headline, a = d.attribution_pct_per_year;
-    const years = Object.entries(d.yearly_returns_pct)
-      .map(([y, v]) => `${y}: <b class="${v >= 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}${v}%</b>`)
-      .join(' · ');
-    $('backtest-body').innerHTML = `
-      <div style="font-size:14px;margin-bottom:6px">
-        <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
-        &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
-        &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
-        &nbsp;|&nbsp; ${d.window.years}y → <b>${h.final_multiple}×</b></div>
-      <div style="margin-bottom:6px">Carry financing: ${a.financing_carry}%/y · Spread costs: ${a.spread_costs}%/y
-        · Vol ${h.ann_vol_pct}% · ${d.window.start} → ${d.window.end}</div>
-      <div style="line-height:1.8">${years}</div>`;
+    const SECTIONS = [
+      ['time_series_majors', 'Time-series carry+trend (8 USD majors)'],
+      ['cross_sectional_carry', 'Cross-sectional carry (16 pairs, long top-3 / short bottom-3)'],
+      ['cross_sectional_carry_trend_veto', 'Cross-sectional carry + trend veto'],
+    ];
+    let html = '';
+    for (const [key, label] of SECTIONS) {
+      const s = d[key];
+      if (!s) continue;
+      if (s.error) { html += `<div style="margin-bottom:8px"><b>${label}:</b> <span class="neg">${s.error}</span></div>`; continue; }
+      const h = s.headline, a = s.attribution_pct_per_year;
+      html += `
+        <div style="margin-bottom:10px">
+          <div style="color:var(--text);font-weight:600;margin-bottom:2px">${label}</div>
+          <div style="font-size:13px">
+            <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
+            &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
+            &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
+            &nbsp;|&nbsp; ${s.window.years}y → <b>${h.final_multiple}×</b>
+            &nbsp;·&nbsp; carry ${a.financing_carry}%/y, costs ${a.spread_costs}%/y</div>
+        </div>`;
+    }
+    $('backtest-body').innerHTML = html || '<span class="neg">No results</span>';
   } catch (err) {
     $('backtest-body').innerHTML = `<span class="neg">Backtest failed: ${err}</span>`;
   } finally {

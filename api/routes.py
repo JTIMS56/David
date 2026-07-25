@@ -1173,10 +1173,11 @@ async def backtest_carry_trend(refresh: bool = Query(False)):
         raise HTTPException(503, "OANDA credentials required for historical candles")
 
     from services.oanda_client import oanda_client, PAIR_TO_OANDA
-    from services.backtest import run_carry_trend
+    from services.backtest import run_carry_trend, run_cross_carry, BT_EXTRA_OANDA
 
+    universe = {**PAIR_TO_OANDA, **BT_EXTRA_OANDA}
     candles, fetch_errors = {}, {}
-    for pair, instrument in PAIR_TO_OANDA.items():
+    for pair, instrument in universe.items():
         try:
             series = await oanda_client.get_daily_candles(instrument, count=3800)
             if len(series) > 200:
@@ -1187,11 +1188,19 @@ async def backtest_carry_trend(refresh: bool = Query(False)):
     if not candles:
         raise HTTPException(502, f"No candle data fetched: {fetch_errors}")
 
-    result = run_carry_trend(candles)
-    result["candles_fetched"] = {p: len(c) for p, c in candles.items()}
+    base8 = {p: c for p, c in candles.items() if p in PAIR_TO_OANDA}
+    result = {
+        # original test: time-series carry+trend on the USD-majors universe
+        "time_series_majors": run_carry_trend(base8),
+        # pre-registered follow-up: classic cross-sectional carry on the
+        # rate-dispersed 16-pair universe (JPY/CHF funding crosses included)
+        "cross_sectional_carry": run_cross_carry(candles),
+        "cross_sectional_carry_trend_veto": run_cross_carry(candles, trend_veto=True),
+        "candles_fetched": {p: len(c) for p, c in candles.items()},
+        "computed_at": datetime.utcnow().isoformat(),
+    }
     if fetch_errors:
         result["fetch_errors"] = fetch_errors
-    result["computed_at"] = datetime.utcnow().isoformat()
     _backtest_cache = result
     return result
 
