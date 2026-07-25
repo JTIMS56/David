@@ -1,5 +1,5 @@
 """
-David — Agentic AI FX Trading Platform
+Popper — Agentic AI FX Trading Platform
 ────────────────────────────────────────────────────────────────────────────
 Entry point. Starts FastAPI with WebSocket support, initialises DB,
 launches market data feed, order monitor, and the AI trading agent.
@@ -190,7 +190,7 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initialising David FX Trading Platform...")
+    logger.info("Initialising Popper FX Trading Platform...")
 
     # Database
     await init_db()
@@ -284,7 +284,7 @@ async def lifespan(app: FastAPI):
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="David — Agentic AI FX Trading Platform",
+    title="Popper — Agentic AI FX Trading Platform",
     version="1.0.0",
     description="Autonomous Claude-powered FX trading agent with real-time dashboard",
     lifespan=lifespan,

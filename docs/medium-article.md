@@ -14,7 +14,7 @@ This is not another "I built a bot that makes $500 a day" article. This is the o
 
 ## The dream
 
-The system (I called it David) was genuinely sophisticated. An LLM agent (Claude, running a tool-use loop) as the decision-maker. A C++ pricing engine implementing a Dirac-Heston-Jump model: stochastic volatility, fat tails, jump risk, a "chiral charge" term borrowed from quantum field theory as a directional signal. A FastAPI backend, PostgreSQL, a real-time dashboard with WebSocket streaming, live integration with a real broker's API. Risk limits. Stop losses. The works.
+The system (I called it Popper, after the philosopher of falsification, a name it would thoroughly earn) was genuinely sophisticated. An LLM agent (Claude, running a tool-use loop) as the decision-maker. A C++ pricing engine implementing a Dirac-Heston-Jump model: stochastic volatility, fat tails, jump risk, a "chiral charge" term borrowed from quantum field theory as a directional signal. A FastAPI backend, PostgreSQL, a real-time dashboard with WebSocket streaming, live integration with a real broker's API. Risk limits. Stop losses. The works.
 
 Every hour, the agent scanned the market, ran forecasts, reasoned about setups in plain English, and traded on a practice account. Reading its decision logs felt like watching a junior trader who never sleeps and never gets emotional.
 

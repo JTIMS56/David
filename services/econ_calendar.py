@@ -27,7 +27,7 @@ import httpx
 
 from config import settings
 
-logger = logging.getLogger("david.econ_calendar")
+logger = logging.getLogger("popper.econ_calendar")
 
 # Parsed events: [{"title": str, "currency": str, "at": datetime(utc), "impact": str}]
 _events: List[dict] = []

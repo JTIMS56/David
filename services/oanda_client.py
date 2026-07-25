@@ -14,7 +14,7 @@ import httpx
 
 from config import settings
 
-logger = logging.getLogger("david.oanda_client")
+logger = logging.getLogger("popper.oanda_client")
 
 # ── Pair mappings ─────────────────────────────────────────────────────────────
 

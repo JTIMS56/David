@@ -21,7 +21,7 @@ from typing import Dict, Optional
 
 from config import settings
 
-logger = logging.getLogger("david.sentiment")
+logger = logging.getLogger("popper.sentiment")
 
 # pair -> {"long_pct": float, "short_pct": float, "time": str, "fetched_at": datetime}
 _cache: Dict[str, dict] = {}

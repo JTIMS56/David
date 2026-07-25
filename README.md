@@ -1,4 +1,4 @@
-# David — Autonomous FX Trading Platform & Strategy Validation Engine
+# Popper — Autonomous FX Trading Platform & Strategy Validation Engine
 
 An autonomous foreign-exchange trading platform with an LLM agent (Claude) as its
 decision engine — and, more importantly, a **rigorous strategy-validation machine**

@@ -25,7 +25,7 @@ from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service, _USD_BASE_PAIRS
 from services.risk_gate import risk_gate
 
-logger = logging.getLogger("david.order_service")
+logger = logging.getLogger("popper.order_service")
 
 
 def _spread_pips(pair: str, bid: float, ask: float) -> float:

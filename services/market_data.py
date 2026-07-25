@@ -143,7 +143,7 @@ class MarketDataService:
                         updated += 1
                 except Exception as exc:
                     import logging as _log
-                    _log.getLogger("david.market_data").warning(
+                    _log.getLogger("popper.market_data").warning(
                         "Live rate fetch failed for %s: %s", pair, exc
                     )
                 # Alpha Vantage: 5 req/min on free tier — wait 13s between calls
@@ -161,7 +161,7 @@ class MarketDataService:
           calls/day = 8 × (86400 / live_refresh_interval) ≤ 25 at 6h
         """
         import logging as _log
-        logger = _log.getLogger("david.market_data")
+        logger = _log.getLogger("popper.market_data")
 
         # Anchor simulation to real prices at startup
         logger.info("Live mode: fetching initial real rates from Alpha Vantage...")
@@ -193,7 +193,7 @@ class MarketDataService:
         """Poll OANDA pricing API every 5 seconds (fallback when streaming fails)."""
         from services.oanda_client import oanda_client, OANDA_TO_PAIR
         import logging as _log
-        logger = _log.getLogger("david.market_data")
+        logger = _log.getLogger("popper.market_data")
         logger.info("OANDA market data: polling mode (streaming unavailable)")
         while self._running:
             try:
@@ -224,7 +224,7 @@ class MarketDataService:
         """
         from services.oanda_client import oanda_client, OANDA_TO_PAIR
         import logging as _log
-        logger = _log.getLogger("david.market_data")
+        logger = _log.getLogger("popper.market_data")
 
         pairs = list(PAIR_CONFIG.keys())
         quick_fail_count = 0
@@ -288,7 +288,7 @@ class MarketDataService:
                 settings.alpha_vantage_key or settings.oanda_api_key
             ):
                 import logging as _log
-                _log.getLogger("david.market_data").warning(
+                _log.getLogger("popper.market_data").warning(
                     "MARKET_DATA_MODE=%s but no API key set — falling back to simulation",
                     settings.market_data_mode,
                 )

@@ -16,7 +16,7 @@ from typing import Optional
 from database import AsyncSessionLocal
 from models.orm import ModelRun
 
-logger = logging.getLogger("david.model_registry")
+logger = logging.getLogger("popper.model_registry")
 
 # Cache the git commit hash for the lifetime of this process
 _GIT_COMMIT: Optional[str] = None

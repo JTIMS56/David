@@ -1,5 +1,5 @@
 """
-David — Autonomous AI FX Trading Agent
+Popper — Autonomous AI FX Trading Agent
 ────────────────────────────────────────────────────────────────────────────
 Powered by Claude. Runs an agentic trading loop:
   1. Scans all pairs for signals
@@ -24,10 +24,10 @@ from models.orm import AgentDecision, CycleLock
 from agents.tools import TOOL_DEFINITIONS, handle_tool_call
 from services.portfolio_service import portfolio_service
 
-logger = logging.getLogger("david.agent")
+logger = logging.getLogger("popper.agent")
 
 SYSTEM_PROMPT = """\
-You are David, an autonomous AI FX (foreign exchange) trading agent. Your mandate is \
+You are Popper, an autonomous AI FX (foreign exchange) trading agent. Your mandate is \
 to generate consistent risk-adjusted returns by trading major currency pairs in the \
 foreign exchange market using a disciplined, rules-based approach.
 

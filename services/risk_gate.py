@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-logger = logging.getLogger("david.risk_gate")
+logger = logging.getLogger("popper.risk_gate")
 
 
 def _dir_to_side(direction: str) -> str:

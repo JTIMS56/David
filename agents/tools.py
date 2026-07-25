@@ -11,7 +11,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
-logger = logging.getLogger("david.tools")
+logger = logging.getLogger("popper.tools")
 
 from config import settings
 from services.market_data import market_data, PAIR_CONFIG
