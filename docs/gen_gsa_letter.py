@@ -11,9 +11,9 @@ INK = HexColor("#111111")
 
 name_s = ParagraphStyle("n", fontName="Helvetica-Bold", fontSize=14, leading=17, textColor=INK, spaceAfter=1)
 contact_s = ParagraphStyle("c", fontName="Helvetica", fontSize=9.2, leading=12, textColor=INK, spaceAfter=13)
-plain_s = ParagraphStyle("p", fontName="Helvetica", fontSize=9.5, leading=12.8, textColor=INK, spaceAfter=8)
-body_s = ParagraphStyle("b", fontName="Helvetica", fontSize=9.5, leading=13.2, textColor=INK,
-                        alignment=TA_JUSTIFY, spaceAfter=8)
+plain_s = ParagraphStyle("p", fontName="Helvetica", fontSize=9.4, leading=12.4, textColor=INK, spaceAfter=7)
+body_s = ParagraphStyle("b", fontName="Helvetica", fontSize=9.4, leading=12.5, textColor=INK,
+                        alignment=TA_JUSTIFY, spaceAfter=7)
 
 S = [
     Paragraph("DAVID N. BELYN", name_s),
@@ -30,9 +30,9 @@ S = [
     Paragraph(
         "This year I designed, built, and ran a systematic trading platform end to end, and used it to "
         "test whether a series of candidate FX strategies carried any edge. The infrastructure was "
-        "production-grade — an autonomous decision agent, deterministic server-side risk gates, live "
-        "broker integration, streaming market data, and real-time monitoring — but the part I would "
-        "want to discuss with you is the methodology rather than the plumbing.", body_s),
+        "production-grade — autonomous decision agent, deterministic server-side risk gates, live "
+        "broker integration, streaming data, real-time monitoring — but the methodology is the part "
+        "worth your time, not the plumbing.", body_s),
 
     Paragraph(
         "I pre-registered acceptance criteria before examining results, held data out strictly for "
@@ -53,30 +53,31 @@ S = [
         "synthetic series with known properties: trending, random-walk, and drawdown regimes.", body_s),
 
     Paragraph(
-        "I am aware that a negative result is an unusual thing to lead a letter with. I do it "
-        "deliberately. The discipline required to retire four of one's own hypotheses, and to build the "
-        "positive control that makes retiring them credible, strikes me as the substance of the work "
-        "rather than an aside to it — and as the difference between a robust trading algorithm and an "
-        "overfitted one.", body_s),
+        "A negative result is an unusual thing to lead a letter with. I do it deliberately: the discipline "
+        "required to retire four of one's own hypotheses, and to build the positive control that makes "
+        "retiring them credible, is the substance of the work rather than an aside to it — and the "
+        "difference between a robust trading algorithm and an overfitted one.", body_s),
 
     Paragraph(
         "My formal credentials are a B.S. in Finance (Auburn, magna cum laude) and dual master's degrees "
         "in Applied Economics and Applied Analytics at Boston College (3.87 GPA, expected 2027), with "
         "graduate coursework in econometrics, machine learning, and statistical modelling. My "
         "professional background is twenty-three years as a U.S. Army officer, currently an information "
-        "operations planner. That is not quantitative finance. It is two decades of forming and "
-        "defending conclusions under genuine uncertainty, in front of audiences who ask hard questions "
-        "and are unmoved by confident presentation.", body_s),
+        "operations planner. That is not quantitative finance. It is two decades of forming and defending "
+        "conclusions under genuine uncertainty, before audiences unmoved by confident "
+        "presentation.", body_s),
 
     Paragraph(
-        "[Availability: add one line here on your timing, retirement date, and willingness to relocate "
-        "to London — GSA will want to know.]", body_s),
+        "On timing: I complete both master's degrees in spring 2027 and retire from the Army that "
+        "summer, with availability to begin in August 2027. I am willing to relocate to London. If that "
+        "timeline fits a graduate research intake rather than an experienced-hire process, I would be "
+        "glad to be considered in that cohort.", body_s),
 
     Paragraph(
         "I recognise this is not the profile you typically see, and I would not ask you to take the "
-        "methodology on faith: the platform, the code, the incident write-ups, and every result above "
-        "are public and reproducible from free data with a single command. If the work suggests someone "
-        "worth half an hour, I would welcome the conversation.", body_s),
+        "methodology on faith: the platform, the code, and every result above are public and "
+        "reproducible from free data with a single command. If the work suggests someone worth half "
+        "an hour, I would welcome the conversation.", body_s),
 
     Spacer(1, 6),
     Paragraph("Respectfully,", plain_s),
@@ -84,7 +85,7 @@ S = [
     Paragraph("David N. Belyn", plain_s),
 ]
 
-SimpleDocTemplate(OUT, pagesize=LETTER, leftMargin=0.9*inch, rightMargin=0.9*inch,
-                  topMargin=0.7*inch, bottomMargin=0.55*inch,
+SimpleDocTemplate(OUT, pagesize=LETTER, leftMargin=0.85*inch, rightMargin=0.85*inch,
+                  topMargin=0.6*inch, bottomMargin=0.5*inch,
                   title="David N. Belyn — Cover Letter", author="David N. Belyn").build(S)
 print("wrote", OUT)
