@@ -157,12 +157,15 @@ class Settings(BaseSettings):
     ]
 
     # Asset classes permitted to EXECUTE. Anything scanned but not listed here is
-    # forecast, gated, and shadow-logged, but never sent to the broker — so a new
-    # asset class accumulates out-of-sample evidence before it can risk capital.
-    # The index backtest validated buy-and-hold (Sharpe 0.55), NOT the agent's
-    # short-horizon ensemble, so indices and metals stay in shadow until the
-    # readiness scorecard says otherwise.
-    live_asset_classes: List[str] = ["fx"]
+    # forecast, gated, and shadow-logged, but never sent to the broker.
+    #
+    # All three are live on the PRACTICE account so end-to-end execution can be
+    # observed across asset classes. Note what the evidence does and does not
+    # say: the index backtest validated buy-and-hold (Sharpe 0.55), NOT the
+    # agent's short-horizon ensemble. Index and metal P&L here is an observation
+    # of machinery, not a validated strategy — drop back to ["fx"] before any
+    # real capital is involved.
+    live_asset_classes: List[str] = ["fx", "index", "metal"]
 
     # ── OANDA ────────────────────────────────────────────────────────────────
     oanda_api_key: str = ""
