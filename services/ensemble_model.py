@@ -62,6 +62,13 @@ def _mean_revert_vote(ind: dict) -> int:
 
 
 def _carry_vote(pair: str) -> int:
+    # Non-FX instruments have no rate differential. Index/metal CFD carry
+    # (dividends minus financing) is a fraction of a basis point per day —
+    # noise at this horizon — so this voter abstains rather than contributing
+    # a permanent structural tilt.
+    from services.market_data import asset_class
+    if asset_class(pair) != "fx":
+        return 0
     try:
         base, quote = pair.split("/")
     except ValueError:
@@ -83,9 +90,12 @@ def _usd_strength_score() -> float:
     Each USD pair contributes the sign of (price - SMA20), oriented so that
     'USD up' is always +1 regardless of whether USD is the base or quote.
     """
+    from services.market_data import asset_class
     votes = []
     for p in settings.default_pairs:
-        if "USD" not in p:
+        # FX only: XAU/USD contains "USD" but gold is not a currency leg, and
+        # including it would pollute a clean currency-breadth measure.
+        if "USD" not in p or asset_class(p) != "fx":
             continue
         ind = market_data.calculate_indicators(p)
         if not ind:
@@ -104,6 +114,11 @@ def _usd_strength_score() -> float:
 
 
 def _usd_strength_vote(pair: str, usd_score: float) -> int:
+    # USD breadth describes currency-vs-currency flow. An index or metal is not
+    # a currency pair, so the base/quote logic below does not apply.
+    from services.market_data import asset_class
+    if asset_class(pair) != "fx":
+        return 0
     if "USD" not in pair or abs(usd_score) < 0.25:   # need broad agreement, not 1 pair
         return 0
     base = pair.split("/")[0]

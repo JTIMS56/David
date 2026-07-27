@@ -26,16 +26,56 @@ from config import settings
 
 # ── Per-pair configuration ────────────────────────────────────────────────────
 
+# Every tradable instrument. "pip" is the quote increment used for all pip-denominated
+# maths (stops, targets, ATR); for indices and metals it is one price point/dollar.
+# min/max_stop_pips are per-instrument because a 50-pip cap is meaningless on an
+# index quoted in the thousands — they are calibrated to roughly 0.5x and 4x a
+# typical daily ATR for each instrument.
 PAIR_CONFIG: Dict[str, dict] = {
-    "EUR/USD": {"base_price": 1.0850, "daily_vol": 0.0055, "spread": 0.00012, "pip": 0.0001},
-    "GBP/USD": {"base_price": 1.2650, "daily_vol": 0.0072, "spread": 0.00016, "pip": 0.0001},
-    "USD/JPY": {"base_price": 149.50, "daily_vol": 0.0060, "spread": 0.015,   "pip": 0.01},
-    "AUD/USD": {"base_price": 0.6520, "daily_vol": 0.0065, "spread": 0.00014, "pip": 0.0001},
-    "USD/CAD": {"base_price": 1.3650, "daily_vol": 0.0052, "spread": 0.00015, "pip": 0.0001},
-    "EUR/GBP": {"base_price": 0.8580, "daily_vol": 0.0043, "spread": 0.00013, "pip": 0.0001},
-    "NZD/USD": {"base_price": 0.6020, "daily_vol": 0.0068, "spread": 0.00018, "pip": 0.0001},
-    "USD/CHF": {"base_price": 0.8980, "daily_vol": 0.0050, "spread": 0.00014, "pip": 0.0001},
+    # ── FX majors ─────────────────────────────────────────────────────────────
+    "EUR/USD": {"base_price": 1.0850, "daily_vol": 0.0055, "spread": 0.00012, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "GBP/USD": {"base_price": 1.2650, "daily_vol": 0.0072, "spread": 0.00016, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "USD/JPY": {"base_price": 149.50, "daily_vol": 0.0060, "spread": 0.015,   "pip": 0.01,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "AUD/USD": {"base_price": 0.6520, "daily_vol": 0.0065, "spread": 0.00014, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "USD/CAD": {"base_price": 1.3650, "daily_vol": 0.0052, "spread": 0.00015, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "EUR/GBP": {"base_price": 0.8580, "daily_vol": 0.0043, "spread": 0.00013, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "NZD/USD": {"base_price": 0.6020, "daily_vol": 0.0068, "spread": 0.00018, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    "USD/CHF": {"base_price": 0.8980, "daily_vol": 0.0050, "spread": 0.00014, "pip": 0.0001,
+                "asset_class": "fx", "min_stop_pips": 15,  "max_stop_pips": 50},
+    # ── Equity index CFDs (1 unit = 1 index point of exposure) ───────────────
+    "SPX500": {"base_price": 6800.0,  "daily_vol": 0.0090, "spread": 0.50, "pip": 1.0,
+               "asset_class": "index", "min_stop_pips": 25,  "max_stop_pips": 300},
+    "NAS100": {"base_price": 25000.0, "daily_vol": 0.0115, "spread": 1.60, "pip": 1.0,
+               "asset_class": "index", "min_stop_pips": 80,  "max_stop_pips": 1200},
+    "US30":   {"base_price": 48000.0, "daily_vol": 0.0080, "spread": 2.20, "pip": 1.0,
+               "asset_class": "index", "min_stop_pips": 100, "max_stop_pips": 1600},
+    "DE30":   {"base_price": 24500.0, "daily_vol": 0.0100, "spread": 1.20, "pip": 1.0,
+               "asset_class": "index", "min_stop_pips": 70,  "max_stop_pips": 1000},
+    "UK100":  {"base_price": 9600.0,  "daily_vol": 0.0075, "spread": 1.00, "pip": 1.0,
+               "asset_class": "index", "min_stop_pips": 30,  "max_stop_pips": 400},
+    # ── Metals (1 unit = 1 oz) ────────────────────────────────────────────────
+    "XAU/USD": {"base_price": 3400.0, "daily_vol": 0.0095, "spread": 0.30, "pip": 1.0,
+                "asset_class": "metal", "min_stop_pips": 12, "max_stop_pips": 160},
+    "XAG/USD": {"base_price": 40.00,  "daily_vol": 0.0170, "spread": 0.020, "pip": 0.01,
+                "asset_class": "metal", "min_stop_pips": 25, "max_stop_pips": 300},
 }
+
+
+def asset_class(pair: str) -> str:
+    return PAIR_CONFIG.get(pair, {}).get("asset_class", "fx")
+
+
+def stop_bounds(pair: str) -> tuple:
+    """(min_stop_pips, max_stop_pips) for an instrument, defaulting to FX values."""
+    cfg = PAIR_CONFIG.get(pair, {})
+    return float(cfg.get("min_stop_pips", 15)), float(cfg.get("max_stop_pips", 50))
 
 HISTORY_DEPTH = 500  # ticks stored per pair in memory
 

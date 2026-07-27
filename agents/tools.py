@@ -200,7 +200,14 @@ async def handle_tool_call(name: str, inputs: Dict[str, Any]) -> Any:
     if name == "get_fx_rates":
         return await _get_fx_rates(inputs["pairs"])
     if name == "get_technical_indicators":
-        return market_data.calculate_indicators(inputs["pair"])
+        _p = inputs["pair"]
+        _ind = market_data.calculate_indicators(_p)
+        if _ind:
+            from services.market_data import asset_class as _acls, stop_bounds as _sb
+            _mn, _mx = _sb(_p)
+            _ind = {**_ind, "asset_class": _acls(_p),
+                    "min_stop_pips": _mn, "max_stop_pips": _mx}
+        return _ind
     if name == "get_price_history":
         return await _get_price_history(inputs["pair"], inputs.get("periods", 50))
     if name == "get_portfolio_status":
@@ -412,8 +419,13 @@ async def _scan_all_pairs() -> list:
         ind = market_data.calculate_indicators(pair)
         if not ind:
             continue
+        from services.market_data import asset_class as _acls, stop_bounds as _sb
+        _mn, _mx = _sb(pair)
         rows.append({
             "pair": pair,
+            "asset_class": _acls(pair),
+            "min_stop_pips": _mn,
+            "max_stop_pips": _mx,
             "price": ind["current_price"],
             "trend": ind["trend"],
             "rsi": ind["rsi"],

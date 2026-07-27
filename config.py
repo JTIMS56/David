@@ -145,11 +145,24 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str = "sqlite+aiosqlite:///./fx_trading.db"
 
-    # ── Currency pairs ────────────────────────────────────────────────────────
+    # ── Tradable instruments ──────────────────────────────────────────────────
     default_pairs: List[str] = [
+        # FX majors
         "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD",
         "USD/CAD", "EUR/GBP", "NZD/USD", "USD/CHF",
+        # Equity index CFDs
+        "SPX500", "NAS100", "US30", "DE30", "UK100",
+        # Metals
+        "XAU/USD", "XAG/USD",
     ]
+
+    # Asset classes permitted to EXECUTE. Anything scanned but not listed here is
+    # forecast, gated, and shadow-logged, but never sent to the broker — so a new
+    # asset class accumulates out-of-sample evidence before it can risk capital.
+    # The index backtest validated buy-and-hold (Sharpe 0.55), NOT the agent's
+    # short-horizon ensemble, so indices and metals stay in shadow until the
+    # readiness scorecard says otherwise.
+    live_asset_classes: List[str] = ["fx"]
 
     # ── OANDA ────────────────────────────────────────────────────────────────
     oanda_api_key: str = ""

@@ -232,6 +232,28 @@ class OrderService:
             )
             return False, f"Order blocked: {decision.reason}", None
 
+        # ── Asset-class execution guard ────────────────────────────────────────
+        # An instrument whose class is not in live_asset_classes is forecast,
+        # gated, and logged, but never sent to the broker. New asset classes
+        # therefore accumulate out-of-sample evidence before risking capital.
+        from services.market_data import asset_class as _asset_class
+        _cls = _asset_class(pair)
+        if source == "agent" and _cls not in settings.live_asset_classes:
+            logger.info(
+                "SHADOW [%s %s %s]: asset class '%s' not enabled for execution",
+                direction, size, pair, _cls,
+            )
+            await _write_audit(
+                source=source, event_type="SHADOW_ORDER",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=True,
+                gate_reason=f"asset class '{_cls}' shadow-only (validation pending)",
+                details={"spread_pips": spread, "asset_class": _cls, "shadow": True},
+            )
+            return True, (f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f} "
+                          f"— {_cls} execution not yet enabled (validation pending)"), None
+
         # ── Shadow mode: log and return without executing ──────────────────────
         if decision.shadow:
             logger.info(
@@ -257,7 +279,9 @@ class OrderService:
                 if pair in _USD_BASE_PAIRS
                 else settings.micro_max_notional / entry_price
             )
-            _scaled = max(1.0, round(min(size * settings.micro_size_factor, _cap_units)))
+            _raw = min(size * settings.micro_size_factor, _cap_units)
+            _scaled = (max(1.0, round(_raw)) if _cls == "fx"
+                       else max(0.1, round(_raw, 1)))
             if _scaled < size:
                 logger.info(
                     "Micro tier: scaling %s %s from %.0f to %.0f units",
@@ -271,7 +295,12 @@ class OrderService:
             from services.oanda_client import oanda_client, PAIR_TO_OANDA
             if pair in PAIR_TO_OANDA:
                 try:
-                    units = int(size) if direction == "BUY" else -int(size)
+                    # FX trades in whole base-currency units; index and metal CFDs
+                    # allow fractional units, which they must — a single SPX500
+                    # unit is several thousand dollars of notional and would
+                    # breach the per-position cap on its own.
+                    _mag = int(size) if _cls == "fx" else round(float(size), 1)
+                    units = _mag if direction == "BUY" else -_mag
                     result = await oanda_client.place_market_order(
                         PAIR_TO_OANDA[pair], units, stop_loss, take_profit
                     )

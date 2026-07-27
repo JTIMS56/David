@@ -27,6 +27,14 @@ PAIR_TO_OANDA: dict[str, str] = {
     "EUR/GBP": "EUR_GBP",
     "NZD/USD": "NZD_USD",
     "USD/CHF": "USD_CHF",
+    # Index and metal CFDs
+    "SPX500":  "SPX500_USD",
+    "NAS100":  "NAS100_USD",
+    "US30":    "US30_USD",
+    "DE30":    "DE30_EUR",
+    "UK100":   "UK100_GBP",
+    "XAU/USD": "XAU_USD",
+    "XAG/USD": "XAG_USD",
 }
 
 OANDA_TO_PAIR: dict[str, str] = {v: k for k, v in PAIR_TO_OANDA.items()}
@@ -35,8 +43,15 @@ OANDA_TO_PAIR: dict[str, str] = {v: k for k, v in PAIR_TO_OANDA.items()}
 _JPY_PAIRS = {"USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "CAD_JPY", "NZD_JPY", "CHF_JPY"}
 
 
+# Index/metal CFDs quote in points, not 5-decimal FX pips
+_POINT_INSTRUMENTS = {"SPX500_USD", "NAS100_USD", "US30_USD", "DE30_EUR",
+                      "UK100_GBP", "XAU_USD"}
+
+
 def _price_decimals(oanda_instrument: str) -> int:
     """Return the number of decimal places to use for a given OANDA instrument."""
+    if oanda_instrument in _POINT_INSTRUMENTS:
+        return 2
     return 3 if oanda_instrument in _JPY_PAIRS else 5
 
 

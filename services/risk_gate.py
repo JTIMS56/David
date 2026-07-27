@@ -338,21 +338,24 @@ class RiskGate:
                     checks_run=checks,
                 )
 
-        # 4d. Stop distance bounds — enforce minimum AND maximum
+        # 4d. Stop distance bounds — per instrument, since a 50-pip ceiling is
+        # meaningless on an index quoted in the thousands.
         checks.append("stop_distance")
         if stop_pips is not None:
-            if stop_pips < self._min_stop_pips:
+            from services.market_data import stop_bounds
+            _min_stop, _max_stop = stop_bounds(pair)
+            if stop_pips < _min_stop:
                 return GateDecision(
                     False,
-                    f"Stop distance {stop_pips:.1f} pips is below minimum {self._min_stop_pips:.1f} pips — "
-                    f"widen stop to reduce risk of noise-triggered exits",
+                    f"Stop distance {stop_pips:.1f} pips is below the {pair} minimum "
+                    f"{_min_stop:.0f} pips — widen stop to reduce risk of noise-triggered exits",
                     checks_run=checks,
                 )
-            if stop_pips > self._max_stop_pips:
+            if stop_pips > _max_stop:
                 return GateDecision(
                     False,
-                    f"Stop distance {stop_pips:.1f} pips exceeds maximum {self._max_stop_pips:.1f} pips — "
-                    f"tighten your stop to reduce per-trade risk",
+                    f"Stop distance {stop_pips:.1f} pips exceeds the {pair} maximum "
+                    f"{_max_stop:.0f} pips — tighten your stop to reduce per-trade risk",
                     checks_run=checks,
                 )
 
