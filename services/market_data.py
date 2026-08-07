@@ -339,6 +339,52 @@ class MarketDataService:
         if self._task:
             self._task.cancel()
 
+    def feed_health(self) -> dict:
+        """
+        Age of the freshest price on the book. A live feed refreshes every few
+        seconds; a large age means the feed has died and every downstream
+        number (indicators, forecasts, evaluations) is being computed against
+        frozen prices. Read by the watchdog and the status endpoint.
+        """
+        if not self._prices:
+            return {"healthy": False, "newest_age_seconds": None, "pairs": 0,
+                    "reason": "no prices on book"}
+        now = datetime.now(timezone.utc)
+        ages = []
+        for bar in self._prices.values():
+            ts = bar.timestamp if bar.timestamp.tzinfo else bar.timestamp.replace(tzinfo=timezone.utc)
+            ages.append((now - ts).total_seconds())
+        newest = min(ages)
+        return {
+            "healthy": newest <= settings.feed_stale_alarm_seconds,
+            "newest_age_seconds": round(newest, 1),
+            "stalest_age_seconds": round(max(ages), 1),
+            "pairs": len(self._prices),
+            "mode": settings.market_data_mode,
+        }
+
+    async def watchdog_loop(self, interval: float = 60.0) -> None:
+        """
+        Alarm when the price feed stops updating. Frozen prices are the most
+        dangerous failure this platform has: nothing crashes, but every forecast
+        is logged against a stale spot and later evaluated against the same
+        stale spot, so measured moves collapse to zero and accuracy statistics
+        silently become meaningless.
+        """
+        import logging as _log
+        log = _log.getLogger("popper.market_data")
+        while self._running:
+            await asyncio.sleep(interval)
+            h = self.feed_health()
+            if not h["healthy"]:
+                log.critical(
+                    "PRICE FEED STALE — freshest quote is %.0fs old across %d "
+                    "instruments (mode=%s). Forecasts and evaluations computed "
+                    "now are invalid. Check OANDA connectivity and quarantined "
+                    "instruments.",
+                    h["newest_age_seconds"] or -1, h["pairs"], h["mode"],
+                )
+
     def get_price(self, pair: str) -> Optional[PriceBar]:
         return self._prices.get(pair)
 

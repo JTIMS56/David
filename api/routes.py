@@ -672,6 +672,24 @@ async def dhj_predict_endpoint(
 # simulation artifacts while keeping real extreme moves.
 _CLEAN_MAX_PIPS = 200
 
+# Index and metal CFDs quote in points, so a routine 0.5% day on US30 (~48,000)
+# is ~240 points and would be discarded by an FX-scaled threshold. Bound each
+# asset class by a realistic 1-day move in its own units instead.
+_CLEAN_MAX_BY_CLASS = {"fx": 200.0, "index": 3000.0, "metal": 400.0}
+
+
+def _is_clean(pair: str, move_pips: Optional[float]) -> bool:
+    """
+    True when an evaluated move is usable evidence. Rejects simulation
+    artefacts (implausibly large) and exact zeros — a genuine 1-day move of
+    precisely 0.0 pips does not occur in a live market, so it means the
+    forecast was graded against a frozen price.
+    """
+    if move_pips is None or move_pips == 0:
+        return False
+    from services.market_data import asset_class
+    return abs(move_pips) <= _CLEAN_MAX_BY_CLASS.get(asset_class(pair), _CLEAN_MAX_PIPS)
+
 
 @router.get("/forecast/accuracy")
 async def forecast_accuracy():
@@ -689,7 +707,7 @@ async def forecast_accuracy():
     # Clean = evaluated AND actual move within realistic 1-day range (no sim artefacts)
     clean     = [
         l for l in evaluated
-        if l.actual_move_pips is not None and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+        if _is_clean(l.pair, l.actual_move_pips)
     ]
     artifacts = len(evaluated) - len(clean)
 
@@ -751,7 +769,7 @@ async def forecast_accuracy():
                 "bs_direction_correct": l.bs_direction_correct,
                 "prob_above_spot":      l.prob_above_spot,
                 "is_simulation_artifact": (
-                    l.actual_move_pips is not None and abs(l.actual_move_pips) > _CLEAN_MAX_PIPS
+                    not _is_clean(l.pair, l.actual_move_pips)
                 ),
                 "created_at":           l.created_at.isoformat() + "Z",
                 "evaluated_at":         l.evaluated_at.isoformat() + "Z" if l.evaluated_at else None,
@@ -805,8 +823,7 @@ async def forecast_edge_analysis(
         l for l in logs
         if l.evaluated_at is not None
         and l.direction_correct is not None
-        and l.actual_move_pips is not None
-        and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+        and _is_clean(l.pair, l.actual_move_pips)
     ]
 
     def cell(rows: list) -> dict:
@@ -914,7 +931,7 @@ async def edge_map_validation():
     clean = [
         l for l in logs
         if l.evaluated_at is not None and l.direction_correct is not None
-        and l.actual_move_pips is not None and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+        and _is_clean(l.pair, l.actual_move_pips)
     ]
 
     def summarize(rows: list) -> dict:
@@ -988,7 +1005,7 @@ async def ensemble_accuracy():
 
     def acc(rows: list) -> dict:
         rows = [r for r in rows if r.direction_correct is not None
-                and r.actual_move_pips is not None and abs(r.actual_move_pips) <= _CLEAN_MAX_PIPS]
+                and _is_clean(r.pair, r.actual_move_pips)]
         n = len(rows)
         ok = sum(1 for r in rows if r.direction_correct)
         return {
@@ -1008,7 +1025,7 @@ async def ensemble_accuracy():
         voted = []
         for l in e_clean:
             v = getattr(l, attr)
-            if v == 0 or l.actual_move_pips is None or abs(l.actual_move_pips) > _CLEAN_MAX_PIPS:
+            if v == 0 or not _is_clean(l.pair, l.actual_move_pips):
                 continue
             correct = (v > 0 and l.actual_move_pips > 0) or (v < 0 and l.actual_move_pips < 0)
             # reuse a tiny shim object isn't needed — count inline
@@ -1117,7 +1134,7 @@ async def go_live_readiness():
     avg_loss = round(sum(losses) / len(losses), 2) if losses else 0.0
 
     clean = [e for e in elogs
-             if e.actual_move_pips is not None and abs(e.actual_move_pips) <= 200]
+             if _is_clean(e.pair, e.actual_move_pips)]
     n = len(clean)
     ok = sum(1 for e in clean if e.direction_correct)
     acc = round(ok / n, 3) if n else None

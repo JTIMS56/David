@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     }
     edge_map_cutoff: str = "2026-06-28"   # forecasts created after this are out-of-sample
 
+    # Alarm when the freshest quote on the book is older than this. A live feed
+    # updates every few seconds; anything beyond a few minutes means the feed
+    # has died and every downstream number is being computed on frozen prices.
+    feed_stale_alarm_seconds: float = 300.0
+
     # ── Weekend protection ────────────────────────────────────────────────────
     # FX closes ~21:00 UTC Friday. Holding through the weekend exposes positions
     # to Monday gap risk with no stop protection (gaps fill at the open price).

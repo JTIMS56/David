@@ -114,6 +114,18 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
         await asyncio.sleep(interval)
         try:
             now = datetime.utcnow()
+            # Never grade a forecast against a frozen feed. Doing so records a
+            # 0-pip "actual move" and a false miss, silently poisoning the
+            # accuracy record — exactly the failure that went undetected for
+            # eleven days when an unsupported instrument killed the feed.
+            _fh = market_data.feed_health()
+            if not _fh["healthy"]:
+                logger.critical(
+                    "Forecast evaluation SKIPPED — price feed stale (%.0fs). "
+                    "Outcomes would be recorded against frozen prices.",
+                    _fh["newest_age_seconds"] or -1,
+                )
+                continue
             async with _ASL() as db:
                 q = (
                     _select(ForecastLog)
@@ -248,6 +260,10 @@ async def lifespan(app: FastAPI):
     # Start forecast evaluation (checks DB every 60s for expired forecasts)
     eval_task = asyncio.create_task(evaluate_forecasts())
 
+    # Price-feed watchdog: frozen prices are silent and corrupt everything
+    # downstream, so alarm loudly rather than fail quietly.
+    watchdog_task = asyncio.create_task(market_data.watchdog_loop())
+
     # New information feeds for the ensemble (phase 1 of the DHJ replacement).
     # Both degrade gracefully: no data → vote 0 / no blackout.
     from services import econ_calendar, sentiment
@@ -272,6 +288,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     broadcast_task.cancel()
     eval_task.cancel()
+    watchdog_task.cancel()
     calendar_task.cancel()
     if sentiment_task:
         sentiment_task.cancel()

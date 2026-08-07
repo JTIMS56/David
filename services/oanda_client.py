@@ -77,6 +77,28 @@ class OandaClient:
 
     # ── Price feed ────────────────────────────────────────────────────────────
 
+    # Instruments OANDA has rejected for this account. A single unknown
+    # instrument makes the pricing endpoint 400 the ENTIRE request, so one bad
+    # symbol would otherwise freeze every price including FX. Quarantined
+    # symbols are skipped by both the REST and streaming paths.
+    _quarantined: set = set()
+
+    async def _probe_instruments(self, instruments: list[str]) -> set:
+        """Return the subset OANDA rejects, by pricing each one individually."""
+        base, headers = self._setup()
+        url = f"{base}/v3/accounts/{settings.oanda_account_id}/pricing"
+        bad = set()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for inst in instruments:
+                try:
+                    r = await client.get(url, headers=headers,
+                                         params={"instruments": inst})
+                    if r.status_code != 200:
+                        bad.add(inst)
+                except Exception:
+                    bad.add(inst)
+        return bad
+
     async def get_prices(self, pairs: list[str]) -> dict:
         """
         Fetch current bid/ask prices for a list of standard pairs (e.g. "EUR/USD").
@@ -85,14 +107,18 @@ class OandaClient:
 
         Returns the raw OANDA response dict with a "prices" list, each item
         containing: instrument, bids, asks, tradeable, status.
-        Raises on non-2xx responses.
+
+        Self-healing: OANDA 400s the whole request if any single instrument is
+        unknown to the account. On failure this probes each symbol, quarantines
+        the offenders, and retries with the survivors, so one bad symbol can
+        never take the price feed down.
         """
         if not settings.oanda_api_key or not settings.oanda_account_id:
             raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
 
-        instruments = ",".join(
-            PAIR_TO_OANDA[p] for p in pairs if p in PAIR_TO_OANDA
-        )
+        wanted = [PAIR_TO_OANDA[p] for p in pairs
+                  if p in PAIR_TO_OANDA and PAIR_TO_OANDA[p] not in self._quarantined]
+        instruments = ",".join(wanted)
         if not instruments:
             return {"prices": []}
 
@@ -102,8 +128,32 @@ class OandaClient:
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            return resp.json()
+            if resp.status_code == 200:
+                return resp.json()
+            # 400 usually means one unknown instrument poisoned the batch.
+            # Find the offenders, quarantine them, and serve the rest.
+            logger.error(
+                "OANDA pricing returned %s for %d instruments — probing for "
+                "unsupported symbols", resp.status_code, len(wanted),
+            )
+            bad = await self._probe_instruments(wanted)
+            if not bad:
+                resp.raise_for_status()
+                return resp.json()
+            self._quarantined |= bad
+            logger.critical(
+                "QUARANTINED unsupported OANDA instruments: %s — price feed "
+                "continues with the remaining %d. Remove them from PAIR_CONFIG "
+                "or correct the symbol names.",
+                ", ".join(sorted(bad)), len(wanted) - len(bad),
+            )
+            survivors = [i for i in wanted if i not in bad]
+            if not survivors:
+                return {"prices": []}
+            resp2 = await client.get(url, headers=headers,
+                                     params={"instruments": ",".join(survivors)})
+            resp2.raise_for_status()
+            return resp2.json()
 
     # ── Sentiment: aggregate client positioning ───────────────────────────────
 
@@ -351,8 +401,11 @@ class OandaClient:
         if not settings.oanda_api_key or not settings.oanda_account_id:
             raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
 
+        # Same poisoning risk as the REST endpoint: one unknown instrument makes
+        # the whole stream 400. Skip anything already quarantined.
         instruments = ",".join(
-            PAIR_TO_OANDA[p] for p in pairs if p in PAIR_TO_OANDA
+            PAIR_TO_OANDA[p] for p in pairs
+            if p in PAIR_TO_OANDA and PAIR_TO_OANDA[p] not in self._quarantined
         )
         if not instruments:
             return
