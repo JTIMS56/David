@@ -1085,7 +1085,14 @@ async def feeds_status():
         pair: bool(econ_calendar.is_blackout(pair)) for pair in PAIR_TO_OANDA
     }
 
+    from services.market_data import market_data as _md
+    from services.oanda_client import oanda_client as _oc
     return {
+        "price_feed": {
+            **_md.feed_health(),
+            "quarantined_instruments": sorted(_oc._quarantined),
+            "real_bars": {p: _md.real_bar_count(p) for p in PAIR_TO_OANDA},
+        },
         "positioning": positioning,
         "positioning_pairs_cached": len(positioning),
         "fade_threshold_pct": settings.positioning_fade_threshold,

@@ -116,6 +116,8 @@ class MarketDataService:
 
     def _seed_simulation(self) -> None:
         """Seed initial prices and generate 200 bars of history."""
+        # Every pair starts synthetic; live paths purge on first real quote.
+        self._synthetic = set(PAIR_CONFIG)
         now = datetime.now(timezone.utc)
         for pair, cfg in PAIR_CONFIG.items():
             price = cfg["base_price"]
@@ -177,9 +179,7 @@ class MarketDataService:
                     bid = float(data.get("8. Bid Price", 0))
                     ask = float(data.get("9. Ask Price", 0))
                     if bid > 0 and ask > 0:
-                        bar = PriceBar(datetime.now(timezone.utc), bid, ask)
-                        self._prices[pair] = bar
-                        self._history[pair].append(bar)
+                        self._record_live(pair, PriceBar(datetime.now(timezone.utc), bid, ask))
                         updated += 1
                 except Exception as exc:
                     import logging as _log
@@ -246,9 +246,7 @@ class MarketDataService:
                         continue
                     bid = float(price_data["bids"][0]["price"])
                     ask = float(price_data["asks"][0]["price"])
-                    bar = PriceBar(datetime.now(timezone.utc), bid, ask)
-                    self._prices[pair] = bar
-                    self._history[pair].append(bar)
+                    self._record_live(pair, PriceBar(datetime.now(timezone.utc), bid, ask))
                     updated += 1
                 if updated:
                     logger.debug("OANDA poll: updated %d pairs", updated)
@@ -285,9 +283,7 @@ class MarketDataService:
                         if pair and tick.get("tradeable", True):
                             bid = float(tick["bids"][0]["price"])
                             ask = float(tick["asks"][0]["price"])
-                            bar = PriceBar(datetime.now(timezone.utc), bid, ask)
-                            self._prices[pair] = bar
-                            self._history[pair].append(bar)
+                            self._record_live(pair, PriceBar(datetime.now(timezone.utc), bid, ask))
                     elif tick_type == "HEARTBEAT":
                         logger.debug("OANDA stream heartbeat")
                 elapsed = time.monotonic() - connected_at
@@ -385,6 +381,34 @@ class MarketDataService:
                     h["newest_age_seconds"] or -1, h["pairs"], h["mode"],
                 )
 
+    def _record_live(self, pair: str, bar: PriceBar) -> None:
+        """
+        Ingest a real broker quote.
+
+        The first real quote for an instrument PURGES the synthetic warm-up
+        history. Blending them puts a fabricated gap between the seeded base
+        price and the real market price into the series — EUR/USD seeded at
+        1.0850 against a real 1.16 is a phantom 750-pip bar, which inflates ATR
+        by an order of magnitude, pins RSI at its extremes, and makes every
+        ATR-derived stop exceed the gate's maximum. Indicators then describe a
+        market that does not exist.
+        """
+        if pair in self._synthetic:
+            self._history[pair].clear()
+            self._synthetic.discard(pair)
+            import logging as _log
+            _log.getLogger("popper.market_data").info(
+                "%s: purged synthetic warm-up history on first live quote", pair
+            )
+        self._prices[pair] = bar
+        self._history[pair].append(bar)
+
+    def real_bar_count(self, pair: str) -> int:
+        """Genuine broker bars held for a pair (0 while still synthetic)."""
+        if pair in self._synthetic:
+            return 0
+        return len(self._history.get(pair, ()))
+
     def get_price(self, pair: str) -> Optional[PriceBar]:
         return self._prices.get(pair)
 
@@ -410,6 +434,12 @@ class MarketDataService:
     # ── Technical indicators ──────────────────────────────────────────────────
 
     def calculate_indicators(self, pair: str) -> dict:
+        # In live modes, refuse to compute until enough GENUINE broker bars have
+        # accumulated. Returning indicators built on synthetic warm-up data (or
+        # on a handful of real bars right after the purge) hands the agent
+        # numbers that describe no real market.
+        if settings.market_data_mode != "simulation" and self.real_bar_count(pair) < 30:
+            return {}
         bars = self.get_history(pair, 200)
         if len(bars) < 30:
             return {}
