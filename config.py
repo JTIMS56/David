@@ -18,6 +18,12 @@ def _parse_origins(raw: str) -> List[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+# Bumped on every deploy-affecting change. Surfaced at /api/status and logged at
+# startup so "is my latest commit actually live?" is answerable in one look
+# rather than inferred from behaviour.
+APP_VERSION = "2026.08.18-feedguard"
+
+
 class Settings(BaseSettings):
     # ── Anthropic ─────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""

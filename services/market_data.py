@@ -115,8 +115,19 @@ class MarketDataService:
     # ── Initialisation ────────────────────────────────────────────────────────
 
     def _seed_simulation(self) -> None:
-        """Seed initial prices and generate 200 bars of history."""
-        # Every pair starts synthetic; live paths purge on first real quote.
+        """
+        Seed initial prices and 200 bars of history — SIMULATION MODE ONLY.
+
+        In live modes nothing is seeded at all. Fabricated bars anchored to a
+        hardcoded base price can only ever contaminate a real series: the gap
+        between the seed and the true market price becomes a phantom bar that
+        inflates ATR by an order of magnitude and pins RSI at its extremes.
+        Starting empty makes that class of corruption impossible rather than
+        merely recoverable.
+        """
+        self._synthetic = set()
+        if settings.market_data_mode != "simulation":
+            return
         self._synthetic = set(PAIR_CONFIG)
         now = datetime.now(timezone.utc)
         for pair, cfg in PAIR_CONFIG.items():
@@ -212,8 +223,12 @@ class MarketDataService:
         refresh_interval = settings.live_refresh_interval
 
         while self._running:
-            # GBM tick — keeps charts smooth between live fetches
+            # GBM tick — keeps charts smooth between live fetches. Skip any
+            # pair that has not received a real anchor quote yet; there is
+            # nothing legitimate to interpolate from.
             for pair in PAIR_CONFIG:
+                if pair not in self._prices:
+                    continue
                 bar = self._next_tick(pair)
                 self._prices[pair] = bar
                 self._history[pair].append(bar)
@@ -443,6 +458,26 @@ class MarketDataService:
         bars = self.get_history(pair, 200)
         if len(bars) < 30:
             return {}
+
+        # Self-heal: a price series spanning a discontinuity produces an ATR
+        # many multiples of anything the instrument really does. Serving those
+        # numbers is worse than serving none — they inflate every ATR-derived
+        # stop past the gate's maximum and freeze trading silently. Discard the
+        # series and rebuild from live quotes instead.
+        if settings.market_data_mode != "simulation":
+            _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+            _rng = (max(b.mid for b in bars) - min(b.mid for b in bars)) / _pip
+            _sane_max = stop_bounds(pair)[1] * 6
+            if _rng > _sane_max:
+                import logging as _log
+                _log.getLogger("popper.market_data").critical(
+                    "%s: price history spans %.0f pips (sane max %.0f) — "
+                    "discontinuity detected, purging and rebuilding from live quotes",
+                    pair, _rng, _sane_max,
+                )
+                self._history[pair].clear()
+                self._synthetic.discard(pair)
+                return {}
 
         closes = np.array([b.mid for b in bars])
 

@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.auth import require_api_key
 from sqlalchemy import select, desc
 
-from config import settings
+from config import settings, APP_VERSION
 from database import AsyncSessionLocal
 from models.orm import AgentDecision, AuditLog, Position, Trade, PortfolioSnapshot
 from models.schemas import (
@@ -30,6 +30,20 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 
 
 # ── System ────────────────────────────────────────────────────────────────────
+
+@router.get("/version")
+async def get_version():
+    """Which build is actually running, and is its price feed alive."""
+    return {
+        "app_version": APP_VERSION,
+        "market_data_mode": settings.market_data_mode,
+        "trading_mode": settings.trading_mode,
+        "execution_tier": settings.execution_tier,
+        "live_asset_classes": settings.live_asset_classes,
+        "price_feed": market_data.feed_health(),
+        "real_bars": {p: market_data.real_bar_count(p) for p in settings.default_pairs},
+    }
+
 
 @router.get("/status", response_model=SystemStatusOut)
 async def get_status():

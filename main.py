@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import settings
+from config import settings, APP_VERSION
 from database import init_db
 from services.market_data import market_data
 from services.order_service import order_service
@@ -202,7 +202,7 @@ async def evaluate_forecasts(interval: float = 60.0) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initialising Popper FX Trading Platform...")
+    logger.info("Initialising Popper FX Trading Platform — version %s", APP_VERSION)
 
     # Database
     await init_db()
