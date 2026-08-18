@@ -418,6 +418,15 @@ async def _scan_all_pairs() -> list:
     for pair in PAIR_CONFIG:
         ind = market_data.calculate_indicators(pair)
         if not ind:
+            # Never skip silently: say WHY this instrument is unavailable so a
+            # data problem cannot masquerade as 'no setups'.
+            from services.market_data import asset_class as _ac
+            rows.append({
+                "pair": pair, "asset_class": _ac(pair), "status": "NO_DATA",
+                "real_bars": market_data.real_bar_count(pair),
+                "bars_required": 30,
+                "note": "indicators unavailable — insufficient real price history",
+            })
             continue
         from services.market_data import asset_class as _acls, stop_bounds as _sb
         _mn, _mx = _sb(pair)

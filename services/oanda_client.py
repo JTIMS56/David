@@ -199,6 +199,42 @@ class OandaClient:
 
     # ── Historical candles (for backtesting) ─────────────────────────────────
 
+    async def get_intraday_candles(self, oanda_instrument: str,
+                                   granularity: str = "M5", count: int = 200) -> list:
+        """
+        Fetch recent intraday candles as (bid, ask) pairs for history bootstrap.
+
+        GET /v3/instruments/{instrument}/candles?granularity=M5&price=BA&count=N
+
+        Lets the platform start with REAL market history immediately instead of
+        either fabricating synthetic bars (which corrupts indicators) or waiting
+        for live ticks to accumulate (which blocks trading for the warm-up).
+        Returns [] on any failure — the caller falls back to live accumulation.
+        """
+        if not settings.oanda_api_key:
+            return []
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": granularity, "price": "BA", "count": str(min(count, 500))}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    logger.warning("Candle bootstrap %s: HTTP %s", oanda_instrument, resp.status_code)
+                    return []
+                out = []
+                for c in resp.json().get("candles", []):
+                    if not c.get("complete"):
+                        continue
+                    try:
+                        out.append((float(c["bid"]["c"]), float(c["ask"]["c"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                return out
+        except Exception as exc:
+            logger.warning("Candle bootstrap failed for %s: %s", oanda_instrument, exc)
+            return []
+
     async def get_daily_candles(self, oanda_instrument: str, count: int = 3800) -> list:
         """
         Fetch up to `count` daily mid-price candles (OANDA max 5000/request).

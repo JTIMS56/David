@@ -396,6 +396,43 @@ class MarketDataService:
                     h["newest_age_seconds"] or -1, h["pairs"], h["mode"],
                 )
 
+    async def bootstrap_history(self) -> dict:
+        """
+        Fill each instrument's history with REAL recent candles from the broker.
+
+        Without this the platform faces a bad choice: fabricate synthetic
+        warm-up bars (which contaminate every indicator) or wait for live ticks
+        to accumulate (which blocks trading during the warm-up, and restarts
+        the clock on every restart since history is in memory). Real candles
+        give correct indicators from the first cycle.
+
+        Best-effort per instrument; anything that fails simply accumulates from
+        live ticks as before.
+        """
+        from services.oanda_client import oanda_client, PAIR_TO_OANDA
+        import logging as _log
+        log = _log.getLogger("popper.market_data")
+
+        loaded, failed = {}, []
+        now = datetime.now(timezone.utc)
+        for pair, instrument in PAIR_TO_OANDA.items():
+            if pair not in self._history:
+                continue
+            candles = await oanda_client.get_intraday_candles(instrument, "M5", 200)
+            if len(candles) < 30:
+                failed.append(pair)
+                continue
+            self._history[pair].clear()
+            self._synthetic.discard(pair)
+            for bid, ask in candles:
+                self._history[pair].append(PriceBar(now, bid, ask))
+            self._prices[pair] = self._history[pair][-1]
+            loaded[pair] = len(candles)
+
+        log.info("History bootstrap: %d instruments loaded from real candles%s",
+                 len(loaded), f", {len(failed)} pending live ticks: {failed}" if failed else "")
+        return {"loaded": loaded, "failed": failed}
+
     def _record_live(self, pair: str, bar: PriceBar) -> None:
         """
         Ingest a real broker quote.

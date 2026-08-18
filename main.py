@@ -211,6 +211,12 @@ async def lifespan(app: FastAPI):
     # Market data
     await market_data.start()
     logger.info(f"Market data started (mode={settings.market_data_mode})")
+    if settings.market_data_mode == "oanda" and settings.oanda_api_key:
+        # Load REAL recent candles so indicators are valid from cycle 1 rather
+        # than waiting for live ticks to accumulate after every restart.
+        _bs = await market_data.bootstrap_history()
+        if _bs["failed"]:
+            logger.warning("History bootstrap incomplete for: %s", _bs["failed"])
     if settings.trading_mode == "oanda" and settings.market_data_mode != "oanda":
         logger.critical(
             "MISCONFIGURATION: trading_mode=oanda but market_data_mode=%s — the "
