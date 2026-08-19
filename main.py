@@ -209,14 +209,38 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialised")
 
     # Market data
+    # Correct the price-feed mode BEFORE starting the feed. Sending live orders
+    # to OANDA while pricing decisions from a different source is the exact
+    # decision/execution desync that produced phantom fills and fake slippage
+    # earlier in this project, and a non-OANDA feed cannot supply index or metal
+    # instruments at all. This is an invariant, not a preference, so enforce it
+    # rather than warn and continue.
+    if (settings.trading_mode == "oanda" and settings.oanda_api_key
+            and settings.market_data_mode != "oanda"):
+        logger.critical(
+            "MISCONFIGURATION CORRECTED: trading_mode=oanda but "
+            "market_data_mode=%s. Forcing market_data_mode=oanda — orders must "
+            "never be priced from a different feed than they execute against. "
+            "Set MARKET_DATA_MODE=oanda in the environment to make this explicit.",
+            settings.market_data_mode,
+        )
+        settings.market_data_mode = "oanda"
+
     await market_data.start()
     logger.info(f"Market data started (mode={settings.market_data_mode})")
-    if settings.market_data_mode == "oanda" and settings.oanda_api_key:
-        # Load REAL recent candles so indicators are valid from cycle 1 rather
-        # than waiting for live ticks to accumulate after every restart.
+
+    # Load REAL recent candles so indicators are valid from cycle 1 rather than
+    # waiting for live ticks to accumulate after every restart. Runs whenever
+    # OANDA credentials exist, independent of feed mode.
+    if settings.oanda_api_key and settings.oanda_account_id:
         _bs = await market_data.bootstrap_history()
+        logger.info("History bootstrap: %d instruments ready", len(_bs["loaded"]))
         if _bs["failed"]:
-            logger.warning("History bootstrap incomplete for: %s", _bs["failed"])
+            logger.critical(
+                "History bootstrap FAILED for %s — these instruments cannot be "
+                "traded until live ticks accumulate. Check instrument names and "
+                "OANDA entitlements.", _bs["failed"],
+            )
     if settings.trading_mode == "oanda" and settings.market_data_mode != "oanda":
         logger.critical(
             "MISCONFIGURATION: trading_mode=oanda but market_data_mode=%s — the "
