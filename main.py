@@ -294,6 +294,14 @@ async def lifespan(app: FastAPI):
     # downstream, so alarm loudly rather than fail quietly.
     watchdog_task = asyncio.create_task(market_data.watchdog_loop())
 
+    # Medium-frequency deterministic engine (opt-in). Runs the same ensemble
+    # and gate as the agent with no model call in the path.
+    from services.fast_engine import fast_engine
+    if settings.fast_engine_enabled:
+        await fast_engine.start()
+        logger.warning('Fast engine ENABLED — %dms deterministic decision loop',
+                       settings.fast_engine_interval_ms)
+
     # New information feeds for the ensemble (phase 1 of the DHJ replacement).
     # Both degrade gracefully: no data → vote 0 / no blackout.
     from services import econ_calendar, sentiment
@@ -319,6 +327,7 @@ async def lifespan(app: FastAPI):
     broadcast_task.cancel()
     eval_task.cancel()
     watchdog_task.cancel()
+    await fast_engine.stop()
     calendar_task.cancel()
     if sentiment_task:
         sentiment_task.cancel()

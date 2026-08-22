@@ -21,7 +21,7 @@ def _parse_origins(raw: str) -> List[str]:
 # Bumped on every deploy-affecting change. Surfaced at /api/status and logged at
 # startup so "is my latest commit actually live?" is answerable in one look
 # rather than inferred from behaviour.
-APP_VERSION = "2026.08.19-feedmode"
+APP_VERSION = "2026.08.19-fastengine"
 
 
 class Settings(BaseSettings):
@@ -97,6 +97,17 @@ class Settings(BaseSettings):
     # updates every few seconds; anything beyond a few minutes means the feed
     # has died and every downstream number is being computed on frozen prices.
     feed_stale_alarm_seconds: float = 300.0
+
+    # ── Medium-frequency execution engine ─────────────────────────────────────
+    # Deterministic sub-second decision loop. Runs the same ensemble and the
+    # same hard risk gate as the agent, but as pure computation with no model
+    # call, so detection-to-order is milliseconds instead of minutes. The LLM
+    # agent keeps running for supervision and position review.
+    fast_engine_enabled: bool = False        # opt-in; agent alone is the default
+    fast_engine_interval_ms: int = 250       # decision cadence
+    fast_engine_pair_cooldown_s: float = 300.0   # min seconds between entries per instrument
+    fast_engine_max_entries_per_min: int = 3     # global throttle
+    fast_engine_max_new_per_cycle: int = 2       # highest-conviction first
 
     # ── Weekend protection ────────────────────────────────────────────────────
     # FX closes ~21:00 UTC Friday. Holding through the weekend exposes positions

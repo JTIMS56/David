@@ -45,6 +45,28 @@ async def get_version():
     }
 
 
+@router.get("/engine")
+async def get_engine():
+    """Medium-frequency engine status and measured stage latencies."""
+    from services.fast_engine import fast_engine
+    return fast_engine.status()
+
+
+@router.post("/engine/{action}")
+async def set_engine(action: str):
+    """Start or stop the deterministic engine at runtime."""
+    from services.fast_engine import fast_engine
+    if action == "start":
+        settings.fast_engine_enabled = True
+        await fast_engine.start()
+    elif action == "stop":
+        settings.fast_engine_enabled = False
+        await fast_engine.stop()
+    else:
+        raise HTTPException(400, "action must be 'start' or 'stop'")
+    return fast_engine.status()
+
+
 @router.get("/status", response_model=SystemStatusOut)
 async def get_status():
     state = await portfolio_service.get_state()
