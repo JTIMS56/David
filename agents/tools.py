@@ -562,6 +562,11 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
             "trade_direction": None,
         }
 
+    # Telemetry: build the distribution that answers "why aren't we trading?"
+    from services import gate_telemetry
+    gate_telemetry.record(pair, fc.conviction, _gate_out["tradeable"],
+                          None if _gate_out["tradeable"] else _gate_out["reason"])
+
     return {
         "pair": pair,
         "spot": round(spot, 6),

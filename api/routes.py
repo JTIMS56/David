@@ -45,6 +45,18 @@ async def get_version():
     }
 
 
+@router.get("/gate-telemetry")
+async def get_gate_telemetry(window_hours: float = Query(24.0, ge=0.5, le=720)):
+    """
+    Distribution of ensemble conviction and gate block reasons.
+
+    Distinguishes "the market is quiet" from "the gate is unreachable" — which
+    look identical from the outside but need opposite fixes.
+    """
+    from services import gate_telemetry
+    return gate_telemetry.summary(window_hours)
+
+
 @router.get("/engine")
 async def get_engine():
     """Medium-frequency engine status and measured stage latencies."""

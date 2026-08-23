@@ -121,7 +121,11 @@ class FastEngine:
             t = time.perf_counter_ns()
             fc = predict(pair, usd_score=usd_score)
             self._stats["forecast_per_instrument"].record((time.perf_counter_ns() - t) / 1000)
-            if fc is None or fc.direction == "FLAT":
+            if fc is None:
+                continue
+            if fc.direction == "FLAT":
+                from services import gate_telemetry
+                gate_telemetry.record(pair, fc.conviction, False, "direction FLAT")
                 continue
 
             direction = "BUY" if fc.direction == "UP" else "SELL"
@@ -130,6 +134,9 @@ class FastEngine:
             put_signal(pair, fc.direction, fc.conviction, fc.event_blackout)
             decision = risk_gate.approve_signal(pair=pair, direction=direction, source="agent")
             self._stats["gate_check"].record((time.perf_counter_ns() - t) / 1000)
+            from services import gate_telemetry
+            gate_telemetry.record(pair, fc.conviction, decision.allowed,
+                                  None if decision.allowed else decision.reason)
             if not decision.allowed:
                 self._last_skip_reason[pair] = decision.reason
                 continue
