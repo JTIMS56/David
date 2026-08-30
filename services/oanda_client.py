@@ -235,6 +235,47 @@ class OandaClient:
             logger.warning("Candle bootstrap failed for %s: %s", oanda_instrument, exc)
             return []
 
+    async def get_candles_ohlc(self, oanda_instrument: str, granularity: str = "H1",
+                               count: int = 5000) -> list:
+        """
+        Full OHLC candles at any granularity, with timestamps — for research.
+
+        Granularity drives what can be measured: M5 resolves intraday
+        microstructure and the volatility signature plot, H1 gives ~10 months
+        of history for daily realized variance and HAR-RV, D covers 14+ years
+        for long-run estimators. OANDA caps a request at 5000 candles.
+
+        Returns [{"time", "date", "open", "high", "low", "close"}, ...]
+        oldest-first, complete candles only. [] on any failure.
+        """
+        if not settings.oanda_api_key:
+            return []
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": granularity, "price": "M", "count": str(min(count, 5000))}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    logger.warning("Candles %s %s: HTTP %s", oanda_instrument,
+                                   granularity, resp.status_code)
+                    return []
+                out = []
+                for c in resp.json().get("candles", []):
+                    if not c.get("complete"):
+                        continue
+                    m = c["mid"]
+                    out.append({
+                        "time": c["time"],
+                        "date": c["time"][:10],
+                        "open": float(m["o"]), "high": float(m["h"]),
+                        "low": float(m["l"]), "close": float(m["c"]),
+                    })
+                return out
+        except Exception as exc:
+            logger.warning("Candle fetch failed %s %s: %s", oanda_instrument, granularity, exc)
+            return []
+
     async def get_daily_candles(self, oanda_instrument: str, count: int = 3800) -> list:
         """
         Fetch up to `count` daily mid-price candles (OANDA max 5000/request).

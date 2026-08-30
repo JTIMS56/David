@@ -236,7 +236,8 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div class="card-title" style="margin-bottom:0">Volatility Research (realized · GARCH · spillover)</div>
           <div style="display:flex;gap:6px">
-            <button class="decision-copy" id="btn-run-vol" onclick="runVolResearch()">Run</button>
+            <button class="decision-copy" id="btn-run-vol" onclick="runVolResearch()">Run Daily</button>
+            <button class="decision-copy" id="btn-run-intraday" onclick="runIntradayVol()">Run Intraday</button>
             <button class="decision-copy" id="btn-copy-vol" onclick="copyVolResearch()">Copy</button>
           </div>
         </div>
@@ -555,6 +556,45 @@ async function fetchOandaBalance() {
 }
 
 let _lastVol = null;
+
+async function runIntradayVol() {
+  const btn = $('btn-run-intraday');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/research/intraday-volatility?refresh=true');
+    const d = await r.json();
+    _lastVol = d;
+    if (d.detail) { $('vol-body').innerHTML = `<span class="neg">${d.detail}</span>`; return; }
+    let html = '';
+    for (const [pair, e] of Object.entries(d.instruments || {})) {
+      const de = e.daily_estimators_ann_pct || {};
+      const h1 = e.intraday_realized_H1 || {};
+      const sig = e.volatility_signature || {};
+      const sigStr = Object.entries(sig)
+        .map(([g,v]) => `${g} <b>${v.mean_realized_vol_ann_pct}%</b>`).join(' · ') || 'n/a';
+      html += `<div style="margin-bottom:12px">
+        <div style="color:var(--text);font-weight:600">${pair}</div>
+        <div>Daily estimators — CC ${de.close_to_close ?? '–'}% · Park ${de.parkinson ?? '–'}%
+             · GK ${de.garman_klass ?? '–'}% · RS ${de.rogers_satchell ?? '–'}%
+             · <b>YZ ${de.yang_zhang ?? '–'}%</b></div>
+        <div>Intraday RV (H1, ${h1.days ?? 0}d) — total <b>${h1.mean_realized_vol_ann_pct ?? '–'}%</b>
+             · continuous ${h1.mean_continuous_vol_ann_pct ?? '–'}%
+             · jumps <b class="${(h1.jump_share_pct||0) > 20 ? 'neg':'pos'}">${h1.jump_share_pct ?? '–'}%</b>
+             · latest ${h1.latest_realized_vol_ann_pct ?? '–'}%</div>
+        <div style="color:var(--muted)">Signature: ${sigStr}</div>`;
+      if (e.har_rv && !e.har_rv.error) {
+        const h = e.har_rv;
+        html += `<div style="margin-top:3px">HAR-RV — OOS R² <b>${h.oos_r_squared}</b>,
+                 beats random walk: <b class="${h.beats_random_walk?'pos':'neg'}">${h.beats_random_walk}</b>
+                 (d ${h.coefficients.daily} · w ${h.coefficients.weekly} · m ${h.coefficients.monthly})</div>`;
+      }
+      html += '</div>';
+    }
+    $('vol-body').innerHTML = html + `<div style="color:var(--muted);margin-top:6px">${d.signature_note}</div>`;
+  } catch (err) {
+    $('vol-body').innerHTML = `<span class="neg">Failed: ${err}</span>`;
+  } finally { btn.textContent = 'Run Intraday'; btn.disabled = false; }
+}
 
 async function runVolResearch() {
   const btn = $('btn-run-vol');

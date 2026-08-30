@@ -129,6 +129,116 @@ async def research_volatility(
     return result
 
 
+_intraday_cache: dict = {}
+
+
+@router.get("/research/intraday-volatility")
+async def research_intraday_volatility(
+    refresh: bool = Query(False),
+    instruments: str = Query("SPX500,NAS100,EUR/USD,USD/JPY,XAU/USD"),
+    har_instrument: str = Query("SPX500"),
+):
+    """
+    Intraday volatility research — the professional-grade measures.
+
+    • Realized variance from intraday returns (Andersen-Bollerslev), split into
+      continuous and jump components via bipower variation (Barndorff-Nielsen
+      & Shephard).
+    • Volatility signature plot: RV against sampling frequency (M5/M15/H1),
+      the standard diagnostic for microstructure noise.
+    • Drift-robust (Rogers-Satchell) and gap-robust (Yang-Zhang) daily
+      estimators alongside the simpler ones.
+    • HAR-RV forecast (Corsi 2009) evaluated out-of-sample against a random
+      walk.
+
+    Data cost is zero — all of it comes from OANDA candles already available
+    on the account.
+    """
+    global _intraday_cache
+    want = [i.strip() for i in instruments.split(",") if i.strip()]
+    key = (tuple(want), har_instrument)
+    if _intraday_cache.get("key") == key and not refresh:
+        return _intraday_cache["result"]
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required")
+
+    import numpy as np
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services import volatility as vol
+
+    out, errors = {}, {}
+    for pair in want:
+        inst = PAIR_TO_OANDA.get(pair)
+        if not inst:
+            errors[pair] = "unknown instrument"
+            continue
+        try:
+            # M5 resolves microstructure; H1 buys ~10 months for HAR-RV.
+            m5 = await oanda_client.get_candles_ohlc(inst, "M5", 5000)
+            m15 = await oanda_client.get_candles_ohlc(inst, "M15", 5000)
+            h1 = await oanda_client.get_candles_ohlc(inst, "H1", 5000)
+            d1 = await oanda_client.get_candles_ohlc(inst, "D", 1200)
+        except Exception as exc:
+            errors[pair] = str(exc)[:120]
+            continue
+        if not h1:
+            errors[pair] = "no intraday candles returned"
+            continue
+
+        rv5 = vol.realized_variance_by_day(m5) if m5 else {"days": 0}
+        rvh = vol.realized_variance_by_day(h1)
+        sig = vol.volatility_signature({"M5": m5, "M15": m15, "H1": h1})
+
+        daily_est = {}
+        if len(d1) > 60:
+            o = np.array([x["open"] for x in d1]); h = np.array([x["high"] for x in d1])
+            l = np.array([x["low"] for x in d1]);  c = np.array([x["close"] for x in d1])
+            daily_est = {
+                "close_to_close": round(float(np.nanmean(vol.rv_close_to_close(c, 21))), 2),
+                "parkinson": round(float(np.nanmean(vol.rv_parkinson(h[1:], l[1:], 21))), 2),
+                "garman_klass": round(float(np.nanmean(vol.rv_garman_klass(o[1:], h[1:], l[1:], c[1:], 21))), 2),
+                "rogers_satchell": round(float(np.nanmean(vol.rv_rogers_satchell(o, h, l, c, 21))), 2),
+                "yang_zhang": round(float(np.nanmean(vol.rv_yang_zhang(o, h, l, c, 21))), 2),
+            }
+
+        entry = {
+            "daily_estimators_ann_pct": daily_est,
+            "intraday_realized_M5": {
+                k: rv5.get(k) for k in ("days", "jump_share_pct")} if rv5.get("days") else None,
+            "intraday_realized_H1": {
+                "days": rvh["days"],
+                "mean_realized_vol_ann_pct": round(float(np.mean(rvh["realized_vol_ann_pct"])), 2) if rvh["days"] else None,
+                "mean_continuous_vol_ann_pct": round(float(np.mean(rvh["continuous_vol_ann_pct"])), 2) if rvh["days"] else None,
+                "jump_share_pct": rvh["jump_share_pct"],
+                "latest_realized_vol_ann_pct": rvh["realized_vol_ann_pct"][-1] if rvh["days"] else None,
+            },
+            "volatility_signature": sig["signature"],
+        }
+        if m5 and rv5.get("days"):
+            entry["intraday_realized_M5"]["mean_realized_vol_ann_pct"] = round(
+                float(np.mean(rv5["realized_vol_ann_pct"])), 2)
+        if pair == har_instrument and rvh["days"] >= 120:
+            entry["har_rv"] = vol.har_rv_forecast(rvh["rv_daily_variance"])
+        out[pair] = entry
+
+    if not out:
+        raise HTTPException(502, f"no data: {errors}")
+
+    result = {
+        "instruments": out,
+        "signature_note": ("RV rising as sampling gets finer is microstructure noise, "
+                           "not volatility. Pick the finest interval where the curve flattens."),
+        "jump_note": ("Bipower variation estimates the continuous part only; "
+                      "RV minus BV is the jump component. They forecast differently — "
+                      "the continuous part persists, jumps do not."),
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if errors:
+        result["errors"] = errors
+    _intraday_cache = {"key": key, "result": result}
+    return result
+
+
 @router.get("/gate-telemetry")
 async def get_gate_telemetry(window_hours: float = Query(24.0, ge=0.5, le=720)):
     """

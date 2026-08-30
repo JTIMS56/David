@@ -75,3 +75,102 @@ def test_spillover_finds_true_source_and_ignores_noise():
     net = sp["diebold_yilmaz"]["net_transmitter_pct"]
     assert max(net, key=net.get) == "LEADER"
     assert abs(net["THIRD"]) < 5.0        # independent series transmits ~nothing
+
+
+def _intraday(true_ann=0.16, days=300, bars=78, jump_frac=0.0, seed=3):
+    rng = np.random.default_rng(seed)
+    ds = true_ann / math.sqrt(252)
+    jump_days = set(rng.choice(days, size=int(days * jump_frac), replace=False)) if jump_frac else set()
+    candles, px = [], 100.0
+    for d in range(days):
+        date = f"2026-{d + 1:05d}"
+        for b in range(bars):
+            r = rng.normal(0, ds / math.sqrt(bars))
+            if d in jump_days and b == bars // 2:
+                r += rng.choice([-1, 1]) * 0.02
+            nxt = px * math.exp(r)
+            candles.append({"date": date, "time": f"{d}-{b}", "open": px,
+                            "high": max(px, nxt), "low": min(px, nxt), "close": nxt})
+            px = nxt
+    return candles
+
+
+def test_rogers_satchell_is_drift_robust():
+    """Parkinson assumes zero drift; Rogers-Satchell does not. With strong
+    drift added, RS should stay closer to the true diffusion volatility."""
+    rng = np.random.default_rng(5)
+    n, steps, true_ann, drift = 1500, 200, 0.16, 0.40      # 40%/yr drift
+    ds, dd = true_ann / math.sqrt(252), drift / 252
+    o, h, l, c = (np.zeros(n) for _ in range(4))
+    px = 100.0
+    for i in range(n):
+        inc = rng.normal(dd / steps, ds / math.sqrt(steps), steps)
+        path = px * np.exp(np.cumsum(inc))
+        o[i], h[i], l[i], c[i] = px, path.max(), path.min(), path[-1]
+        px = path[-1]
+    rs = np.nanmean(vol.rv_rogers_satchell(o, h, l, c, 21))
+    pk = np.nanmean(vol.rv_parkinson(h, l, 21))
+    assert abs(rs - 16.0) <= abs(pk - 16.0) + 1.0
+    assert 12.0 < rs < 20.0
+
+
+def test_yang_zhang_captures_overnight_gaps():
+    """Yang-Zhang includes close-to-open variance; Parkinson ignores it, so
+    with real gaps present YZ must report higher volatility."""
+    rng = np.random.default_rng(6)
+    n, steps = 1200, 200
+    ds = 0.16 / math.sqrt(252)
+    o, h, l, c = (np.zeros(n) for _ in range(4))
+    px = 100.0
+    for i in range(n):
+        px *= math.exp(rng.normal(0, 0.008))          # overnight gap
+        path = px * np.exp(np.cumsum(rng.normal(0, ds / math.sqrt(steps), steps)))
+        o[i], h[i], l[i], c[i] = px, path.max(), path.min(), path[-1]
+        px = path[-1]
+    yz = np.nanmean(vol.rv_yang_zhang(o, h, l, c, 21))
+    pk = np.nanmean(vol.rv_parkinson(h, l, 21))
+    assert yz > pk, "YZ must exceed Parkinson when overnight gaps are present"
+
+
+def test_bipower_variation_strips_jumps():
+    candles = _intraday(true_ann=0.16, days=400, jump_frac=0.10)
+    res = vol.realized_variance_by_day(candles)
+    total = np.mean(res["realized_vol_ann_pct"])
+    cont = np.mean(res["continuous_vol_ann_pct"])
+    assert cont < total, "bipower must be below total RV when jumps exist"
+    assert abs(cont - 16.0) < 3.0, "continuous component should recover the diffusion"
+    assert res["jump_share_pct"] > 5.0
+
+
+def test_no_jumps_means_no_jump_component():
+    res = vol.realized_variance_by_day(_intraday(jump_frac=0.0, days=200))
+    assert res["jump_share_pct"] < 12.0, "should not invent jumps in a pure diffusion"
+
+
+def test_har_rv_beats_random_walk_on_heterogeneous_volatility():
+    """
+    HAR exists because realized volatility has LONG MEMORY — components
+    decaying at daily, weekly and monthly speeds (Corsi's heterogeneous market
+    hypothesis). This simulates that structure and requires HAR to beat a
+    random walk on it.
+
+    Worth knowing the contrast: on a single AR(1) log-RV process, HAR does NOT
+    beat the random walk (measured: RMSE 0.258 vs 0.253 across three seeds).
+    When yesterday is a sufficient statistic, extra horizons only add variance.
+    The weekly and monthly terms earn their place only when the data actually
+    has multi-horizon persistence.
+    """
+    rng = np.random.default_rng(9)
+    n = 1200
+    # Three superimposed components: short, medium, long persistence.
+    d = np.zeros(n); w = np.zeros(n); m = np.zeros(n)
+    for t in range(1, n):
+        d[t] = 0.50 * d[t - 1] + rng.normal(0, 0.30)
+        w[t] = 0.90 * w[t - 1] + rng.normal(0, 0.15)
+        m[t] = 0.99 * m[t - 1] + rng.normal(0, 0.05)
+    lrv = math.log(1e-4) + d + w + m
+    har = vol.har_rv_forecast(list(np.exp(lrv)))
+    assert har["beats_random_walk"], "HAR must beat RW on heterogeneous volatility"
+    assert har["oos_r_squared"] > 0.4
+    # The weekly/monthly terms should carry real weight, not collapse to daily.
+    assert abs(har["coefficients"]["weekly"]) + abs(har["coefficients"]["monthly"]) > 0.05

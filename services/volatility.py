@@ -332,3 +332,200 @@ def spillover_analysis(vol_series: Dict[str, dict], lags: int = 5,
             "source and correctly scored the independent series at ~0."),
         "diebold_yilmaz": dy,
     }
+
+
+# ── 4. Drift- and gap-robust range estimators ────────────────────────────────
+
+def rv_rogers_satchell(opens, highs, lows, closes, window: int = 21) -> np.ndarray:
+    """
+    Rogers-Satchell (1991): ln(H/C)ln(H/O) + ln(L/C)ln(L/O).
+
+    Unlike Parkinson and Garman-Klass this is unbiased in the presence of
+    drift, which matters for trending instruments — an equity index with a
+    persistent upward drift makes the zero-drift estimators read high.
+    Still assumes continuous observation, so it shares their downward
+    discrete-sampling bias, and it ignores overnight gaps.
+    """
+    rs = (np.log(highs / closes) * np.log(highs / opens)
+          + np.log(lows / closes) * np.log(lows / opens))
+    out = np.full(len(rs), np.nan)
+    for i in range(window - 1, len(rs)):
+        m = np.mean(rs[i - window + 1:i + 1])
+        out[i] = math.sqrt(m) if m > 0 else np.nan
+    return out * math.sqrt(TRADING_DAYS) * 100
+
+
+def rv_yang_zhang(opens, highs, lows, closes, window: int = 21) -> np.ndarray:
+    """
+    Yang-Zhang (2000) — the most complete of the range estimators.
+
+    Decomposes total variance into three parts and weights them:
+        overnight (close-to-open) + k * open-to-close + (1-k) * Rogers-Satchell
+
+    It is both drift-independent and gap-consistent, which is why it is the
+    usual choice when overnight jumps matter. That makes it the right
+    benchmark for instruments that close: index CFDs gap, spot FX barely does.
+    """
+    n = len(closes)
+    out = np.full(n - 1, np.nan)
+    o, h, l, c = map(np.asarray, (opens, highs, lows, closes))
+    overnight = np.log(o[1:] / c[:-1])       # close(t-1) -> open(t)
+    openclose = np.log(c[1:] / o[1:])        # open(t)    -> close(t)
+    rs = (np.log(h[1:] / c[1:]) * np.log(h[1:] / o[1:])
+          + np.log(l[1:] / c[1:]) * np.log(l[1:] / o[1:]))
+    k = 0.34 / (1.34 + (window + 1) / (window - 1))
+    for i in range(window - 1, len(out)):
+        s = slice(i - window + 1, i + 1)
+        v_on = np.var(overnight[s], ddof=1)
+        v_oc = np.var(openclose[s], ddof=1)
+        v_rs = np.mean(rs[s])
+        v = v_on + k * v_oc + (1 - k) * v_rs
+        out[i] = math.sqrt(v) if v > 0 else np.nan
+    return out * math.sqrt(TRADING_DAYS) * 100
+
+
+# ── 5. Intraday realized variance (the professional standard) ────────────────
+
+def realized_variance_by_day(candles: List[dict]) -> dict:
+    """
+    Daily realized variance from intraday returns (Andersen-Bollerslev 1998),
+    with its jump decomposition.
+
+    RV_t  = sum of squared intraday returns within day t. As sampling gets
+            finer this converges to the day's integrated variance PLUS any
+            jumps.
+    BV_t  = bipower variation, (pi/2) * sum |r_i||r_{i-1}| (Barndorff-Nielsen
+            & Shephard 2004). Products of adjacent returns are robust to
+            isolated jumps, so BV estimates the CONTINUOUS part alone.
+    Jump  = max(RV - BV, 0), the discontinuous part.
+
+    Separating them matters because the two components forecast differently:
+    the continuous part is persistent, jumps are not. Averaging them together
+    is a large part of why naive volatility forecasts disappoint.
+
+    Returns dates, and annualised-percent series for total, continuous and
+    jump volatility.
+    """
+    by_day: Dict[str, List[float]] = {}
+    prev_close, prev_date = None, None
+    for c in candles:
+        d = c["date"]
+        if prev_close is not None and d == prev_date:
+            by_day.setdefault(d, []).append(math.log(c["close"] / prev_close))
+        prev_close, prev_date = c["close"], d
+
+    dates, rv, bv, jump = [], [], [], []
+    for d in sorted(by_day):
+        r = np.asarray(by_day[d])
+        if len(r) < 10:                     # too few observations to be meaningful
+            continue
+        rv_d = float(np.sum(r ** 2))
+        # Bipower needs adjacent absolute returns; scale by pi/2.
+        bv_d = float((math.pi / 2) * np.sum(np.abs(r[1:]) * np.abs(r[:-1])))
+        bv_d = min(bv_d, rv_d)              # BV cannot exceed RV in theory
+        dates.append(d)
+        rv.append(rv_d)
+        bv.append(bv_d)
+        jump.append(max(rv_d - bv_d, 0.0))
+
+    ann = lambda v: [round(float(math.sqrt(max(x, 0) * TRADING_DAYS) * 100), 3) for x in v]
+    return {
+        "dates": dates,
+        "rv_daily_variance": rv,                     # raw, for HAR-RV
+        "realized_vol_ann_pct": ann(rv),
+        "continuous_vol_ann_pct": ann(bv),
+        "jump_vol_ann_pct": ann(jump),
+        "jump_share_pct": round(
+            100.0 * sum(jump) / sum(rv), 2) if sum(rv) > 0 else None,
+        "days": len(dates),
+    }
+
+
+def volatility_signature(candles_by_granularity: Dict[str, List[dict]]) -> dict:
+    """
+    Volatility signature plot: average annualised RV against sampling frequency.
+
+    Microstructure noise — bid-ask bounce, discrete ticks — is a larger share
+    of the observed return the finer you sample, so RV is biased UPWARD at
+    high frequency. Plotting RV against sampling interval is the standard
+    diagnostic for choosing one: practitioners pick the finest frequency at
+    which the curve has flattened. Five minutes is the common answer, and this
+    shows whether that holds for a given instrument.
+    """
+    sig = {}
+    for gran, candles in candles_by_granularity.items():
+        if not candles:
+            continue
+        res = realized_variance_by_day(candles)
+        if res["days"] < 3:
+            continue
+        vals = [v for v in res["realized_vol_ann_pct"] if v > 0]
+        if vals:
+            sig[gran] = {
+                "mean_realized_vol_ann_pct": round(float(np.mean(vals)), 2),
+                "days": res["days"],
+                "obs_per_day_avg": round(
+                    len(candles) / max(res["days"], 1), 1),
+            }
+    return {
+        "signature": sig,
+        "note": ("RV inflated at the finest sampling is microstructure noise, not "
+                 "volatility. Choose the finest interval at which the curve has "
+                 "flattened; 5 minutes is the usual compromise."),
+    }
+
+
+# ── 6. HAR-RV: the workhorse realized-volatility forecasting model ───────────
+
+def har_rv_forecast(rv_daily_variance: List[float], train_frac: float = 0.7) -> dict:
+    """
+    Heterogeneous Autoregressive model of Realized Volatility (Corsi 2009).
+
+        RV_{t+1} = c + b_d*RV_t + b_w*mean(RV_{t-4..t}) + b_m*mean(RV_{t-21..t})
+
+    The three terms stand in for traders acting on daily, weekly and monthly
+    horizons. It is only a constrained linear regression, yet it is the
+    standard benchmark in the realized-volatility literature and is hard to
+    beat — which is itself the point worth making to a class: the winning
+    model here is simple, whereas the winning model for RETURNS does not exist.
+
+    Fitted on log RV (variance is right-skewed), evaluated strictly
+    out-of-sample against a random-walk baseline (tomorrow = today).
+    """
+    rv = np.asarray(rv_daily_variance, dtype=float)
+    rv = rv[np.isfinite(rv) & (rv > 0)]
+    if len(rv) < 120:
+        return {"error": f"need >= 120 daily RV observations, have {len(rv)}"}
+
+    lrv = np.log(rv)
+    rows, targets = [], []
+    for t in range(21, len(lrv) - 1):
+        rows.append([1.0, lrv[t], lrv[t - 4:t + 1].mean(), lrv[t - 21:t + 1].mean()])
+        targets.append(lrv[t + 1])
+    X, y = np.asarray(rows), np.asarray(targets)
+
+    split = int(len(X) * train_frac)
+    if split < 60 or len(X) - split < 30:
+        return {"error": "insufficient data to split train/test"}
+
+    beta, *_ = np.linalg.lstsq(X[:split], y[:split], rcond=None)
+    pred = X[split:] @ beta
+    actual = y[split:]
+
+    # Baseline: tomorrow's log RV equals today's (column index 1).
+    naive = X[split:, 1]
+    ss_res = float(np.sum((actual - pred) ** 2))
+    ss_tot = float(np.sum((actual - actual.mean()) ** 2))
+    return {
+        "coefficients": {"const": round(float(beta[0]), 4),
+                         "daily": round(float(beta[1]), 4),
+                         "weekly": round(float(beta[2]), 4),
+                         "monthly": round(float(beta[3]), 4)},
+        "n_train": split, "n_test": len(actual),
+        "oos_r_squared": round(1 - ss_res / ss_tot, 4) if ss_tot > 0 else None,
+        "oos_rmse_log_rv": round(float(np.sqrt(np.mean((actual - pred) ** 2))), 4),
+        "naive_rmse_log_rv": round(float(np.sqrt(np.mean((actual - naive) ** 2))), 4),
+        "beats_random_walk": bool(
+            np.mean((actual - pred) ** 2) < np.mean((actual - naive) ** 2)),
+        "correlation_with_actual": round(float(np.corrcoef(actual, pred)[0, 1]), 4),
+    }
