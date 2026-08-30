@@ -231,6 +231,22 @@
         <div id="readiness-body" style="font-size:12px;color:var(--muted)">Loading…</div>
       </div>
 
+      <!-- Volatility Research -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Volatility Research (realized · GARCH · spillover)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-vol" onclick="runVolResearch()">Run</button>
+            <button class="decision-copy" id="btn-copy-vol" onclick="copyVolResearch()">Copy</button>
+          </div>
+        </div>
+        <div id="vol-body" style="font-size:12px;color:var(--muted)">
+          Press Run to compute realized volatility (close-to-close, Parkinson, Garman-Klass),
+          evaluate GARCH(1,1) out-of-sample against EWMA and constant-variance baselines,
+          and test cross-market volatility spillover. Takes ~30-60s.
+        </div>
+      </div>
+
       <!-- Carry+Trend Backtest -->
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
@@ -536,6 +552,71 @@ async function fetchOandaBalance() {
     $('m-unrealised').className = 'metric-sub ' + pnlClass(unreal);
     $('m-balance-label').textContent = `OANDA ${d.environment === 'live' ? 'Live' : 'Practice'} ${d.currency}`;
   } catch (_) {}
+}
+
+let _lastVol = null;
+
+async function runVolResearch() {
+  const btn = $('btn-run-vol');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/research/volatility?refresh=true');
+    const d = await r.json();
+    _lastVol = d;
+    if (d.detail) { $('vol-body').innerHTML = `<span class="neg">${d.detail}</span>`; return; }
+
+    const rv = d.realized_volatility || {};
+    const rows = Object.entries(rv).sort((a,b) => b[1].close_to_close_ann_pct - a[1].close_to_close_ann_pct)
+      .map(([k,v]) => `<tr><td>${k}</td><td style="text-align:right">${v.close_to_close_ann_pct}%</td>`
+        + `<td style="text-align:right">${v.parkinson_ann_pct}%</td>`
+        + `<td style="text-align:right">${v.garman_klass_ann_pct}%</td></tr>`).join('');
+
+    const g = d.garch_out_of_sample || {};
+    let garchHtml = '<span class="neg">unavailable</span>';
+    if (g.garch11) {
+      const better = g.garch11.qlike < g.constant_variance.qlike;
+      garchHtml = `<b class="${better ? 'pos' : 'neg'}">${g.instrument}</b> — QLIKE: `
+        + `GARCH <b>${g.garch11.qlike}</b> · EWMA ${g.ewma_riskmetrics.qlike} · constant ${g.constant_variance.qlike}`
+        + ` &nbsp;|&nbsp; OOS R² <b>${g.garch11.oos_r_squared ?? 'n/a'}</b>`
+        + `<div style="margin-top:3px">${g.verdict || ''}</div>`;
+    }
+
+    const sp = d.spillover || {};
+    let spillHtml = '<span class="neg">unavailable</span>';
+    if (sp.diebold_yilmaz && !sp.diebold_yilmaz.error) {
+      const dy = sp.diebold_yilmaz;
+      const net = Object.entries(dy.net_transmitter_pct).slice(0, 6)
+        .map(([k,v]) => `${k} <b class="${v >= 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}${v}</b>`).join(' · ');
+      const links = (sp.granger_significant_at_5pct || []).slice(0, 6)
+        .map(x => `${x.from}→${x.to}`).join(', ') || 'none';
+      spillHtml = `Total spillover index <b>${dy.total_spillover_index_pct}%</b> `
+        + `(VAR ${dy.var_lags} lags, ${dy.horizon_days}d horizon, n=${sp.observations})`
+        + `<div style="margin-top:3px">Net transmitters: ${net}</div>`
+        + `<div style="margin-top:3px;color:var(--muted)">Top Granger links: ${links}</div>`;
+    }
+
+    $('vol-body').innerHTML =
+      `<div style="color:var(--text);font-weight:600;margin-bottom:4px">Realized volatility (annualised, ${d.window_days}d window)</div>`
+      + `<div class="table-wrap" style="max-height:230px;overflow-y:auto"><table>`
+      + `<thead><tr><th>Instrument</th><th style="text-align:right">Close-Close</th>`
+      + `<th style="text-align:right">Parkinson</th><th style="text-align:right">Garman-Klass</th></tr></thead>`
+      + `<tbody>${rows}</tbody></table></div>`
+      + `<div style="color:var(--text);font-weight:600;margin:10px 0 3px">GARCH(1,1) out-of-sample</div>${garchHtml}`
+      + `<div style="color:var(--text);font-weight:600;margin:10px 0 3px">Cross-market spillover</div>${spillHtml}`;
+  } catch (err) {
+    $('vol-body').innerHTML = `<span class="neg">Failed: ${err}</span>`;
+  } finally { btn.textContent = 'Run'; btn.disabled = false; }
+}
+
+function copyVolResearch() {
+  if (!_lastVol) return;
+  navigator.clipboard.writeText(
+    `Volatility Research — ${new Date().toUTCString().slice(0,25)} UTC\n` +
+    JSON.stringify(_lastVol, null, 2)
+  ).then(() => {
+    const b = $('btn-copy-vol');
+    if (b) { b.textContent = 'Copied!'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); }
+  });
 }
 
 let _lastBacktest = null;

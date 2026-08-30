@@ -21,7 +21,7 @@ def _parse_origins(raw: str) -> List[str]:
 # Bumped on every deploy-affecting change. Surfaced at /api/status and logged at
 # startup so "is my latest commit actually live?" is answerable in one look
 # rather than inferred from behaviour.
-APP_VERSION = "2026.08.23-telemetry"
+APP_VERSION = "2026.08.24-volatility"
 
 
 class Settings(BaseSettings):

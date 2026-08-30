@@ -241,8 +241,11 @@ class OandaClient:
 
         GET /v3/instruments/{instrument}/candles?granularity=D&price=M&count=N
 
-        Returns [{"date": "YYYY-MM-DD", "close": float}, ...] oldest-first,
-        complete candles only. Raises on missing credentials or API errors.
+        Returns [{"date", "open", "high", "low", "close"}, ...] oldest-first,
+        complete candles only. High and low are required by the range-based
+        volatility estimators (Parkinson, Garman-Klass), which are far more
+        efficient than close-to-close for a given sample size.
+        Raises on missing credentials or API errors.
         """
         if not settings.oanda_api_key:
             raise RuntimeError("OANDA_API_KEY must be set for historical candles")
@@ -255,9 +258,13 @@ class OandaClient:
             out = []
             for c in resp.json().get("candles", []):
                 if c.get("complete"):
+                    m = c["mid"]
                     out.append({
                         "date": c["time"][:10],
-                        "close": float(c["mid"]["c"]),
+                        "open": float(m["o"]),
+                        "high": float(m["h"]),
+                        "low": float(m["l"]),
+                        "close": float(m["c"]),
                     })
             return out
 

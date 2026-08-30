@@ -45,6 +45,90 @@ async def get_version():
     }
 
 
+_vol_cache: dict = {}
+
+
+@router.get("/research/volatility")
+async def research_volatility(
+    refresh: bool = Query(False),
+    window: int = Query(21, ge=5, le=120),
+    garch_pair: str = Query("SPX500"),
+    lags: int = Query(5, ge=1, le=20),
+):
+    """
+    Volatility research: realized-volatility estimators, out-of-sample GARCH
+    forecast evaluation, and cross-market spillover.
+
+    Answers "is volatility predictable, and does it transmit between markets?"
+    on the same ~14 years of daily OANDA candles used by the return backtests.
+    """
+    global _vol_cache
+    key = (window, garch_pair, lags)
+    if _vol_cache.get("key") == key and not refresh:
+        return _vol_cache["result"]
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    import numpy as np
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services import volatility as vol
+
+    candles, errors = {}, {}
+    for pair, instrument in PAIR_TO_OANDA.items():
+        try:
+            c = await oanda_client.get_daily_candles(instrument, count=3800)
+            if len(c) > 300:
+                candles[pair] = c
+        except Exception as exc:
+            errors[pair] = str(exc)[:100]
+    if not candles:
+        raise HTTPException(502, f"no candle data: {errors}")
+
+    estimators, series_for_spillover = {}, {}
+    for pair, c in candles.items():
+        o = np.array([x["open"] for x in c]); h = np.array([x["high"] for x in c])
+        l = np.array([x["low"] for x in c]);  cl = np.array([x["close"] for x in c])
+        dates = [x["date"] for x in c][1:]          # returns lose the first bar
+        cc = vol.rv_close_to_close(cl, window)
+        pk = vol.rv_parkinson(h[1:], l[1:], window)
+        gk = vol.rv_garman_klass(o[1:], h[1:], l[1:], cl[1:], window)
+        estimators[pair] = {
+            "close_to_close_ann_pct": round(float(np.nanmean(cc)), 2),
+            "parkinson_ann_pct": round(float(np.nanmean(pk)), 2),
+            "garman_klass_ann_pct": round(float(np.nanmean(gk)), 2),
+            "latest_close_to_close_ann_pct": round(float(cc[-1]), 2) if np.isfinite(cc[-1]) else None,
+            "observations": len(cl),
+        }
+        ok = np.isfinite(cc)
+        series_for_spillover[pair] = {
+            "dates": [d for d, k in zip(dates, ok) if k],
+            "vol": [float(v) for v in cc[ok]],
+        }
+
+    garch = {"error": f"{garch_pair} not available"}
+    if garch_pair in candles:
+        closes = np.array([x["close"] for x in candles[garch_pair]])
+        garch = vol.garch_walk_forward(closes)
+        garch["instrument"] = garch_pair
+
+    spill = vol.spillover_analysis(series_for_spillover, lags=lags)
+
+    result = {
+        "realized_volatility": estimators,
+        "estimator_note": ("Parkinson and Garman-Klass use the daily range and are "
+                           "far more efficient than close-to-close, but understate "
+                           "volatility when prices gap overnight."),
+        "garch_out_of_sample": garch,
+        "spillover": spill,
+        "window_days": window,
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if errors:
+        result["fetch_errors"] = errors
+    _vol_cache = {"key": key, "result": result}
+    return result
+
+
 @router.get("/gate-telemetry")
 async def get_gate_telemetry(window_hours: float = Query(24.0, ge=0.5, le=720)):
     """
