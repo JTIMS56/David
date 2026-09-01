@@ -25,7 +25,7 @@ from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service, _USD_BASE_PAIRS
 from services.risk_gate import risk_gate
 
-logger = logging.getLogger("david.order_service")
+logger = logging.getLogger("popper.order_service")
 
 
 def _spread_pips(pair: str, bid: float, ask: float) -> float:
@@ -108,6 +108,8 @@ class OrderService:
         take_profit: Optional[float] = None,
         reasoning: Optional[str] = None,
         source: str = "agent",   # "agent" | "human" | "sl_tp"
+        stop_pips_req: Optional[float] = None,   # pips-based geometry: SL/TP are
+        tp_pips_req: Optional[float] = None,     # re-anchored to the REAL entry quote
     ) -> Tuple[bool, str, Optional[Position]]:
         bar = market_data.get_price(pair)
         if bar is None:
@@ -118,10 +120,87 @@ class OrderService:
             )
             return False, f"No price available for {pair}", None
 
-        entry_price = bar.ask if direction == "BUY" else bar.bid
-        spread      = _spread_pips(pair, bar.bid, bar.ask)
-        data_age    = _data_age_seconds(bar)
+        # When trading on OANDA, quote from OANDA. The internal feed can run in
+        # simulation/hybrid modes that drift 10-20p from real prices — quoting
+        # from it produced fake "slippage" vs real fills and mis-anchored SL/TP.
+        _real_quote = None
+        if settings.trading_mode == "oanda" and settings.oanda_api_key:
+            _pm = await self._oanda_price_map()
+            _real_quote = _pm.get(pair) if _pm else None
+            if _real_quote is None and source == "agent":
+                await _write_audit(
+                    source=source, event_type="ORDER_REJECT",
+                    pair=pair, direction=direction, size=size, stop_loss=stop_loss,
+                    gate_allowed=False,
+                    gate_reason="Real OANDA quote unavailable — refusing to enter on unverified prices",
+                )
+                return False, f"Order blocked: real OANDA quote for {pair} unavailable", None
+
+        if _real_quote is not None:
+            _qbid, _qask = _real_quote
+            entry_price = _qask if direction == "BUY" else _qbid
+            spread      = _spread_pips(pair, _qbid, _qask)
+            data_age    = 0.0
+        else:
+            entry_price = bar.ask if direction == "BUY" else bar.bid
+            spread      = _spread_pips(pair, bar.bid, bar.ask)
+            data_age    = _data_age_seconds(bar)
+
+        # Pips-based geometry: derive SL/TP from the entry quote we actually
+        # gate and fill against. Kills the fast-market race where prices drift
+        # between the agent's data fetch and order placement, invalidating
+        # absolute SL/TP levels (the cycle-#72 nine-rejection storm).
+        if stop_pips_req is not None:
+            _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+            _tp_pips = tp_pips_req if tp_pips_req is not None else stop_pips_req * 1.6
+            if direction == "BUY":
+                stop_loss   = round(entry_price - stop_pips_req * _pip, 5)
+                take_profit = round(entry_price + _tp_pips * _pip, 5)
+            else:
+                stop_loss   = round(entry_price + stop_pips_req * _pip, 5)
+                take_profit = round(entry_price - _tp_pips * _pip, 5)
+
         s_pips      = _stop_pips(pair, entry_price, stop_loss) if stop_loss is not None else None
+        _pip        = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
+        tp_pips     = abs(take_profit - entry_price) / _pip if take_profit is not None else None
+        _ind        = market_data.calculate_indicators(pair)
+        atr_pips    = _ind.get("atr_pips") if _ind else None
+
+        # ── Micro-tier daily loss budget (agent orders only) ───────────────────
+        # A hard experiment budget independent of the 3% account limit: once the
+        # day is down by micro_daily_loss_limit, no new entries until tomorrow.
+        if source == "agent" and settings.execution_tier == "micro":
+            _st = await portfolio_service.get_state()
+            if _st["daily_pnl"] <= -settings.micro_daily_loss_limit:
+                _reason = (
+                    f"Micro-tier daily loss budget exhausted "
+                    f"(daily P&L {_st['daily_pnl']:.2f} <= -{settings.micro_daily_loss_limit:.0f}) "
+                    f"— no new entries until the next trading day"
+                )
+                logger.warning("Order BLOCKED: %s", _reason)
+                await _write_audit(
+                    source=source, event_type="ORDER_REJECT",
+                    pair=pair, direction=direction, size=size,
+                    entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                    gate_allowed=False, gate_reason=_reason,
+                )
+                return False, f"Order blocked: {_reason}", None
+
+        # ── Signal-quality gate (mandatory, LLM cannot bypass) ────────────────
+        sig_decision = risk_gate.approve_signal(pair=pair, direction=direction, source=source)
+        if not sig_decision.allowed:
+            logger.warning(
+                "Order BLOCKED by signal gate [%s %s %s]: %s",
+                direction, size, pair, sig_decision.reason,
+            )
+            await _write_audit(
+                source=source, event_type="ORDER_REJECT",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=False, gate_reason=sig_decision.reason,
+                details={"checks_run": sig_decision.checks_run, "gate": "signal"},
+            )
+            return False, f"Order blocked: {sig_decision.reason}", None
 
         # ── Hard gate (mandatory, LLM cannot bypass) ──────────────────────────
         decision = risk_gate.approve_order(
@@ -135,6 +214,8 @@ class OrderService:
             source=source,
             stop_pips=s_pips,
             take_profit=take_profit,
+            atr_pips=atr_pips,
+            tp_pips=tp_pips,
         )
 
         if not decision.allowed:
@@ -151,6 +232,28 @@ class OrderService:
             )
             return False, f"Order blocked: {decision.reason}", None
 
+        # ── Asset-class execution guard ────────────────────────────────────────
+        # An instrument whose class is not in live_asset_classes is forecast,
+        # gated, and logged, but never sent to the broker. New asset classes
+        # therefore accumulate out-of-sample evidence before risking capital.
+        from services.market_data import asset_class as _asset_class
+        _cls = _asset_class(pair)
+        if source == "agent" and _cls not in settings.live_asset_classes:
+            logger.info(
+                "SHADOW [%s %s %s]: asset class '%s' not enabled for execution",
+                direction, size, pair, _cls,
+            )
+            await _write_audit(
+                source=source, event_type="SHADOW_ORDER",
+                pair=pair, direction=direction, size=size,
+                entry_price=entry_price, stop_loss=stop_loss, take_profit=take_profit,
+                gate_allowed=True,
+                gate_reason=f"asset class '{_cls}' shadow-only (validation pending)",
+                details={"spread_pips": spread, "asset_class": _cls, "shadow": True},
+            )
+            return True, (f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f} "
+                          f"— {_cls} execution not yet enabled (validation pending)"), None
+
         # ── Shadow mode: log and return without executing ──────────────────────
         if decision.shadow:
             logger.info(
@@ -166,13 +269,38 @@ class OrderService:
             )
             return True, f"[SHADOW] Would open {direction} {size} {pair} @ {entry_price:.5f}", None
 
+        # ── Micro-tier size scaling (agent orders only) ─────────────────────────
+        # Execute for real but at data-gathering size: micro_size_factor of the
+        # requested units, hard-capped at micro_max_notional USD. Gives genuine
+        # fill/slippage/spread data while the strategy validates out-of-sample.
+        if source == "agent" and settings.execution_tier == "micro":
+            _cap_units = (
+                settings.micro_max_notional
+                if pair in _USD_BASE_PAIRS
+                else settings.micro_max_notional / entry_price
+            )
+            _raw = min(size * settings.micro_size_factor, _cap_units)
+            _scaled = (max(1.0, round(_raw)) if _cls == "fx"
+                       else max(0.1, round(_raw, 1)))
+            if _scaled < size:
+                logger.info(
+                    "Micro tier: scaling %s %s from %.0f to %.0f units",
+                    direction, pair, size, _scaled,
+                )
+                size = _scaled
+
         # ── OANDA live execution ───────────────────────────────────────────────
         oanda_trade_id: Optional[str] = None
         if settings.trading_mode == "oanda" and settings.oanda_api_key:
             from services.oanda_client import oanda_client, PAIR_TO_OANDA
             if pair in PAIR_TO_OANDA:
                 try:
-                    units = int(size) if direction == "BUY" else -int(size)
+                    # FX trades in whole base-currency units; index and metal CFDs
+                    # allow fractional units, which they must — a single SPX500
+                    # unit is several thousand dollars of notional and would
+                    # breach the per-position cap on its own.
+                    _mag = int(size) if _cls == "fx" else round(float(size), 1)
+                    units = _mag if direction == "BUY" else -_mag
                     result = await oanda_client.place_market_order(
                         PAIR_TO_OANDA[pair], units, stop_loss, take_profit
                     )
@@ -191,52 +319,101 @@ class OrderService:
                     if fill:
                         oanda_trade_id = fill.get("tradeOpened", {}).get("tradeID")
                         fill_price = fill.get("price")
+                        _quoted_entry = entry_price  # preserve original quoted price for re-anchor
                         if fill_price:
                             entry_price = float(fill_price)
                         logger.info(
                             "OANDA order filled: trade_id=%s price=%s",
                             oanda_trade_id, fill_price,
                         )
-                        # Post-fill SL/TP sanity check: the fill can differ from the
-                        # market data price used for gate validation.  If the fill
-                        # price moved past TP or put SL on the wrong side, abort now.
-                        # Also enforce a post-fill R:R floor: if slippage degraded
-                        # the realized R:R below 1.0, the trade is no longer worth
-                        # taking (originally planned at ≥ 1.5).
+                        # Post-fill geometry check with re-anchor fallback.
+                        # Hard-abort only when fill is already past SL (unrecoverable loss).
+                        # For all other violations (fill past TP, stop eroded, R:R < 1.0)
+                        # attempt to re-anchor SL/TP to the actual fill price, preserving
+                        # the original pip distances from the quoted entry.  Abort only if
+                        # slippage exceeds 2× the original stop distance (setup is stale).
                         if fill_price:
                             _fp = float(fill_price)
                             _pip = PAIR_CONFIG.get(pair, {}).get("pip", 0.0001)
                             _abort: str | None = None
-                            if direction == "BUY":
-                                if stop_loss is not None and stop_loss >= _fp:
-                                    _abort = f"fill {_fp:.5f} at or below BUY stop_loss {stop_loss:.5f}"
-                                elif take_profit is not None and take_profit <= _fp:
-                                    _abort = f"fill {_fp:.5f} at or above BUY take_profit {take_profit:.5f}"
-                            else:
-                                if stop_loss is not None and stop_loss <= _fp:
-                                    _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f}"
-                                elif take_profit is not None and take_profit >= _fp:
-                                    _abort = f"fill {_fp:.5f} at or below SELL take_profit {take_profit:.5f}"
-                            # R:R floor — slippage can widen stop relative to reward
-                            if _abort is None and take_profit is not None and stop_loss is not None:
-                                _risk = abs(_fp - stop_loss) / _pip
-                                _reward = abs(take_profit - _fp) / _pip
-                                _rr = _reward / _risk if _risk > 0 else 0.0
-                                if _rr < 1.0:
-                                    _abort = (
-                                        f"post-fill R:R {_rr:.2f} below 1.0 "
-                                        f"(fill {_fp:.5f}, stop {stop_loss:.5f} [{_risk:.1f}p], "
-                                        f"tp {take_profit:.5f} [{_reward:.1f}p])"
-                                    )
-                            if _abort and oanda_trade_id:
+
+                            # Hard abort: fill is already past the stop loss
+                            if direction == "BUY" and stop_loss is not None and stop_loss >= _fp:
+                                _abort = f"fill {_fp:.5f} at or below BUY stop_loss {stop_loss:.5f} — unrecoverable"
+                            elif direction == "SELL" and stop_loss is not None and stop_loss <= _fp:
+                                _abort = f"fill {_fp:.5f} at or above SELL stop_loss {stop_loss:.5f} — unrecoverable"
+
+                            # Soft violations: attempt re-anchor
+                            if _abort is None and stop_loss is not None:
+                                _stop_dist = abs(_quoted_entry - stop_loss)
+                                _tp_dist = abs(take_profit - _quoted_entry) if take_profit is not None else None
+                                _slip_pips = abs(_fp - _quoted_entry) / _pip
+                                _needs_reanchor = False
+
+                                # Check if geometry is broken at fill price
+                                if direction == "BUY":
+                                    if take_profit is not None and take_profit <= _fp:
+                                        _needs_reanchor = True
+                                else:
+                                    if take_profit is not None and take_profit >= _fp:
+                                        _needs_reanchor = True
+
+                                # Check if stop eroded below minimum
+                                _stop_pips_actual = abs(_fp - stop_loss) / _pip
+                                if _stop_pips_actual < settings.min_stop_pips:
+                                    _needs_reanchor = True
+
+                                # Check R:R floor
+                                if take_profit is not None:
+                                    _risk = abs(_fp - stop_loss) / _pip
+                                    _reward = abs(take_profit - _fp) / _pip
+                                    _rr = _reward / _risk if _risk > 0 else 0.0
+                                    if _rr < 1.0:
+                                        _needs_reanchor = True
+
+                                if _needs_reanchor:
+                                    # Abort if slippage is more than 2× the original stop distance
+                                    # (the setup is too stale to salvage)
+                                    if _stop_dist > 0 and _slip_pips > (_stop_dist / _pip) * 2:
+                                        _abort = (
+                                            f"slippage {_slip_pips:.1f}p exceeds 2× stop distance "
+                                            f"{_stop_dist / _pip:.1f}p — setup too stale to re-anchor"
+                                        )
+                                    else:
+                                        # Re-anchor: preserve original pip distances, apply to fill price
+                                        _new_sl = (_fp - _stop_dist) if direction == "BUY" else (_fp + _stop_dist)
+                                        _new_tp = ((_fp + _tp_dist) if direction == "BUY" else (_fp - _tp_dist)) if _tp_dist is not None else take_profit
+                                        # Abort if the re-anchored stop is still below minimum
+                                        # (original setup was inherently too tight regardless of slippage)
+                                        _new_stop_pips = _stop_dist / _pip
+                                        if _new_stop_pips < settings.min_stop_pips:
+                                            _abort = (
+                                                f"re-anchored stop {_new_stop_pips:.1f}p still below "
+                                                f"minimum {settings.min_stop_pips:.0f}p — original "
+                                                f"setup too tight to salvage"
+                                            )
+                                        else:
+                                            logger.info(
+                                                "Post-fill re-anchor [%s %s]: quoted=%.5f fill=%.5f "
+                                                "slip=%.1fp — sl %.5f→%.5f tp %s→%s",
+                                                direction, pair, _quoted_entry, _fp, _slip_pips,
+                                                stop_loss, _new_sl,
+                                                f"{take_profit:.5f}" if take_profit is not None else "None",
+                                                f"{_new_tp:.5f}" if _new_tp is not None else "None",
+                                            )
+                                            stop_loss = _new_sl
+                                            take_profit = _new_tp
+
+                            if _abort:
                                 logger.error(
                                     "Post-fill abort [%s %s]: %s — closing trade immediately",
                                     direction, pair, _abort,
                                 )
-                                try:
-                                    await oanda_client.close_trade(oanda_trade_id)
-                                except Exception as _ce:
-                                    logger.error("Failed to close aborted OANDA trade: %s", _ce)
+                                if oanda_trade_id:
+                                    try:
+                                        await oanda_client.close_trade(oanda_trade_id)
+                                    except Exception as _ce:
+                                        logger.error("Failed to close aborted OANDA trade: %s", _ce)
                                 await _write_audit(
                                     source=source, event_type="ORDER_REJECT",
                                     pair=pair, direction=direction, size=size,
@@ -432,16 +609,153 @@ class OrderService:
         logger.info("Position closed: id=%d action=%s pnl=%.2f", position_id, action, pnl)
         return True, f"Closed position {position_id} @ {close_price:.5f}, PnL: {pnl:.2f}", pnl
 
+    # ── Real-price sourcing for live monitoring ───────────────────────────────
+
+    async def _oanda_price_map(self) -> Optional[dict]:
+        """
+        Fresh bid/ask per pair straight from OANDA, for use by the monitor and
+        order entry when trading_mode is oanda.
+
+        The internal market_data feed can run in simulation/hybrid modes whose
+        prices drift 10-20 pips from reality; acting on those while positions
+        fill at real OANDA prices caused phantom SL triggers, instant
+        breakeven-stop closes, and fake "slippage". When we trade on OANDA we
+        must decide on OANDA prices. Returns {pair: (bid, ask)} or None when
+        unavailable (then callers must NOT act on unverified internal prices).
+        """
+        if not (settings.trading_mode == "oanda" and settings.oanda_api_key):
+            return None
+        try:
+            from services.oanda_client import oanda_client, OANDA_TO_PAIR
+            data = await oanda_client.get_prices(list(PAIR_CONFIG.keys()))
+            out: dict = {}
+            for p in data.get("prices", []):
+                pair = OANDA_TO_PAIR.get(p.get("instrument", ""))
+                if pair and p.get("bids") and p.get("asks"):
+                    out[pair] = (float(p["bids"][0]["price"]), float(p["asks"][0]["price"]))
+            return out or None
+        except Exception as exc:
+            logger.warning("OANDA monitor price fetch failed: %s", exc)
+            return None
+
+    # ── Trailing stop / breakeven ─────────────────────────────────────────────
+
+    async def update_trailing_stops(self, price_map: Optional[dict] = None) -> None:
+        """
+        Ratchet protective stops on winning positions so they cannot round-trip
+        back into a loss.  Two stages, both moving the stop only in the
+        favorable direction (never loosening it):
+
+          1. Breakeven — once profit ≥ breakeven_trigger_pips, the stop jumps to
+             entry (+ a small buffer to cover spread), guaranteeing the trade
+             can't turn red.
+          2. Trail — once profit ≥ trail_trigger_pips, the stop follows the best
+             price at trail_distance_pips behind it.
+
+        The stored stop_loss itself is the high-water ratchet: each tick we
+        compute a candidate stop from the live price and only adopt it when it
+        is tighter than the current stop, so no peak-price column is needed.
+        """
+        if not settings.trailing_stop_enabled:
+            return
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(Position).where(Position.status == "OPEN"))
+            positions = result.scalars().all()
+
+            oanda_updates: list[tuple[str, str, float, Optional[float]]] = []
+            dirty = False
+
+            for pos in positions:
+                if price_map is not None:
+                    quote = price_map.get(pos.pair)
+                    if quote is None:
+                        continue
+                    _bid, _ask = quote
+                else:
+                    bar = market_data.get_price(pos.pair)
+                    if bar is None:
+                        continue
+                    _bid, _ask = bar.bid, bar.ask
+                pip = PAIR_CONFIG.get(pos.pair, {}).get("pip", 0.0001)
+                # Mark against the price we'd exit at (the protective-stop side).
+                current = _bid if pos.direction == "BUY" else _ask
+                profit_pips = (
+                    (current - pos.entry_price) / pip
+                    if pos.direction == "BUY"
+                    else (pos.entry_price - current) / pip
+                )
+
+                if profit_pips < settings.breakeven_trigger_pips:
+                    continue
+
+                # Candidate stop from the trailing stage (if armed), else breakeven.
+                if profit_pips >= settings.trail_trigger_pips:
+                    trail = settings.trail_distance_pips * pip
+                    candidate = current - trail if pos.direction == "BUY" else current + trail
+                else:
+                    buf = settings.breakeven_buffer_pips * pip
+                    candidate = pos.entry_price + buf if pos.direction == "BUY" else pos.entry_price - buf
+
+                # Ratchet: adopt only when strictly more protective than the current stop.
+                if pos.direction == "BUY":
+                    improved = pos.stop_loss is None or candidate > pos.stop_loss
+                else:
+                    improved = pos.stop_loss is None or candidate < pos.stop_loss
+                if not improved:
+                    continue
+
+                old_stop = pos.stop_loss
+                pos.stop_loss = round(candidate, 5)
+                dirty = True
+                stage = "trail" if profit_pips >= settings.trail_trigger_pips else "breakeven"
+                logger.info(
+                    "Trailing stop [%s %s pos %d]: %s — profit %.1fp, stop %s→%.5f",
+                    pos.direction, pos.pair, pos.id, stage, profit_pips,
+                    f"{old_stop:.5f}" if old_stop is not None else "None", pos.stop_loss,
+                )
+                if pos.oanda_trade_id:
+                    oanda_updates.append((pos.oanda_trade_id, pos.pair, pos.stop_loss, pos.take_profit))
+
+            if dirty:
+                await db.commit()
+
+        # Push the new stops to OANDA's broker-level orders outside the DB session.
+        if oanda_updates and settings.trading_mode == "oanda" and settings.oanda_api_key:
+            from services.oanda_client import oanda_client, PAIR_TO_OANDA
+            for trade_id, pair, new_stop, tp in oanda_updates:
+                try:
+                    # Re-send TP alongside SL so OANDA's dependent-orders replace
+                    # doesn't drop the existing take-profit.
+                    await oanda_client.set_trade_orders(
+                        oanda_trade_id=trade_id,
+                        oanda_instrument=PAIR_TO_OANDA.get(pair, ""),
+                        sl_price=new_stop,
+                        tp_price=tp,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Trailing stop: failed to update OANDA trade %s (internal monitor still active): %s",
+                        trade_id, exc,
+                    )
+
     # ── SL/TP monitoring ──────────────────────────────────────────────────────
 
-    async def check_sl_tp(self) -> None:
+    async def check_sl_tp(self, price_map: Optional[dict] = None) -> None:
         positions = await portfolio_service.get_open_positions()
         for pos in positions:
-            bar = market_data.get_price(pos.pair)
-            if bar is None:
-                continue
+            if price_map is not None:
+                quote = price_map.get(pos.pair)
+                if quote is None:
+                    continue
+                _bid, _ask = quote
+            else:
+                bar = market_data.get_price(pos.pair)
+                if bar is None:
+                    continue
+                _bid, _ask = bar.bid, bar.ask
 
-            current = bar.bid if pos.direction == "BUY" else bar.ask
+            current = _bid if pos.direction == "BUY" else _ask
             triggered_action: Optional[str] = None
 
             if pos.stop_loss is not None:
@@ -451,10 +765,27 @@ class OrderService:
                     triggered_action = "SL_HIT"
 
             if pos.take_profit is not None and triggered_action is None:
-                if pos.direction == "BUY"  and current >= pos.take_profit:
-                    triggered_action = "TP_HIT"
+                if pos.direction == "BUY" and current >= pos.take_profit:
+                    if pos.take_profit > pos.entry_price:
+                        triggered_action = "TP_HIT"
+                    else:
+                        # TP stored below entry (inverted) — treat as SL to close the loss
+                        logger.error(
+                            "Inverted TP detected [pos %d %s %s]: tp=%.5f <= entry=%.5f — "
+                            "closing as SL_HIT",
+                            pos.id, pos.direction, pos.pair, pos.take_profit, pos.entry_price,
+                        )
+                        triggered_action = "SL_HIT"
                 elif pos.direction == "SELL" and current <= pos.take_profit:
-                    triggered_action = "TP_HIT"
+                    if pos.take_profit < pos.entry_price:
+                        triggered_action = "TP_HIT"
+                    else:
+                        logger.error(
+                            "Inverted TP detected [pos %d %s %s]: tp=%.5f >= entry=%.5f — "
+                            "closing as SL_HIT",
+                            pos.id, pos.direction, pos.pair, pos.take_profit, pos.entry_price,
+                        )
+                        triggered_action = "SL_HIT"
 
             if triggered_action:
                 await self.close_position(
@@ -465,10 +796,37 @@ class OrderService:
                 )
 
     async def _monitor_loop(self, interval: float = 3.0) -> None:
+        _is_oanda = settings.trading_mode == "oanda" and bool(settings.oanda_api_key)
         while True:
             try:
                 await portfolio_service.update_unrealised_pnl()
-                await self.check_sl_tp()
+                # When trading on OANDA, stop/TP decisions MUST use real OANDA
+                # prices — internal feed modes can drift 10-20p from reality,
+                # which armed phantom breakeven stops and closed positions
+                # instantly. If real prices are unavailable this tick, skip
+                # trigger logic entirely (broker-side SL/TP still protects).
+                price_map = await self._oanda_price_map() if _is_oanda else None
+                if _is_oanda and price_map is None:
+                    logger.debug("Monitor tick skipped: OANDA prices unavailable")
+                else:
+                    await self.update_trailing_stops(price_map)
+                    await self.check_sl_tp(price_map)
+
+                # Weekend flatten: close everything before the Friday close so
+                # no position rides the weekend gap without stop protection.
+                from services.risk_gate import weekend_flatten_due
+                if weekend_flatten_due():
+                    for pos in await portfolio_service.get_open_positions():
+                        ok, msg, pnl = await self.close_position(
+                            pos.id,
+                            reasoning="Weekend flatten: closing before Friday "
+                                      "market close (Monday gap risk)",
+                            source="sl_tp",
+                        )
+                        logger.warning(
+                            "Weekend flatten [%s pos %d]: %s (pnl %.2f)",
+                            pos.pair, pos.id, "closed" if ok else msg, pnl,
+                        )
                 # Drawdown circuit-breaker
                 state = await portfolio_service.get_state()
                 if risk_gate.check_drawdown(state["drawdown_pct"]):

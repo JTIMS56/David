@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from api.auth import require_api_key
 from sqlalchemy import select, desc
 
-from config import settings
+from config import settings, APP_VERSION
 from database import AsyncSessionLocal
 from models.orm import AgentDecision, AuditLog, Position, Trade, PortfolioSnapshot
 from models.schemas import (
@@ -30,6 +30,248 @@ router = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
 
 
 # ── System ────────────────────────────────────────────────────────────────────
+
+@router.get("/version")
+async def get_version():
+    """Which build is actually running, and is its price feed alive."""
+    return {
+        "app_version": APP_VERSION,
+        "market_data_mode": settings.market_data_mode,
+        "trading_mode": settings.trading_mode,
+        "execution_tier": settings.execution_tier,
+        "live_asset_classes": settings.live_asset_classes,
+        "price_feed": market_data.feed_health(),
+        "real_bars": {p: market_data.real_bar_count(p) for p in settings.default_pairs},
+    }
+
+
+_vol_cache: dict = {}
+
+
+@router.get("/research/volatility")
+async def research_volatility(
+    refresh: bool = Query(False),
+    window: int = Query(21, ge=5, le=120),
+    garch_pair: str = Query("SPX500"),
+    lags: int = Query(5, ge=1, le=20),
+):
+    """
+    Volatility research: realized-volatility estimators, out-of-sample GARCH
+    forecast evaluation, and cross-market spillover.
+
+    Answers "is volatility predictable, and does it transmit between markets?"
+    on the same ~14 years of daily OANDA candles used by the return backtests.
+    """
+    global _vol_cache
+    key = (window, garch_pair, lags)
+    if _vol_cache.get("key") == key and not refresh:
+        return _vol_cache["result"]
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    import numpy as np
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services import volatility as vol
+
+    candles, errors = {}, {}
+    for pair, instrument in PAIR_TO_OANDA.items():
+        try:
+            c = await oanda_client.get_daily_candles(instrument, count=3800)
+            if len(c) > 300:
+                candles[pair] = c
+        except Exception as exc:
+            errors[pair] = str(exc)[:100]
+    if not candles:
+        raise HTTPException(502, f"no candle data: {errors}")
+
+    estimators, series_for_spillover = {}, {}
+    for pair, c in candles.items():
+        o = np.array([x["open"] for x in c]); h = np.array([x["high"] for x in c])
+        l = np.array([x["low"] for x in c]);  cl = np.array([x["close"] for x in c])
+        dates = [x["date"] for x in c][1:]          # returns lose the first bar
+        cc = vol.rv_close_to_close(cl, window)
+        pk = vol.rv_parkinson(h[1:], l[1:], window)
+        gk = vol.rv_garman_klass(o[1:], h[1:], l[1:], cl[1:], window)
+        estimators[pair] = {
+            "close_to_close_ann_pct": round(float(np.nanmean(cc)), 2),
+            "parkinson_ann_pct": round(float(np.nanmean(pk)), 2),
+            "garman_klass_ann_pct": round(float(np.nanmean(gk)), 2),
+            "latest_close_to_close_ann_pct": round(float(cc[-1]), 2) if np.isfinite(cc[-1]) else None,
+            "observations": len(cl),
+        }
+        ok = np.isfinite(cc)
+        series_for_spillover[pair] = {
+            "dates": [d for d, k in zip(dates, ok) if k],
+            "vol": [float(v) for v in cc[ok]],
+        }
+
+    garch = {"error": f"{garch_pair} not available"}
+    if garch_pair in candles:
+        closes = np.array([x["close"] for x in candles[garch_pair]])
+        garch = vol.garch_walk_forward(closes)
+        garch["instrument"] = garch_pair
+
+    spill = vol.spillover_analysis(series_for_spillover, lags=lags)
+
+    result = {
+        "realized_volatility": estimators,
+        "estimator_note": ("Parkinson and Garman-Klass use the daily range and are "
+                           "far more efficient than close-to-close, but understate "
+                           "volatility when prices gap overnight."),
+        "garch_out_of_sample": garch,
+        "spillover": spill,
+        "window_days": window,
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if errors:
+        result["fetch_errors"] = errors
+    _vol_cache = {"key": key, "result": result}
+    return result
+
+
+_intraday_cache: dict = {}
+
+
+@router.get("/research/intraday-volatility")
+async def research_intraday_volatility(
+    refresh: bool = Query(False),
+    instruments: str = Query("SPX500,NAS100,EUR/USD,USD/JPY,XAU/USD"),
+    har_instrument: str = Query("SPX500"),
+):
+    """
+    Intraday volatility research — the professional-grade measures.
+
+    • Realized variance from intraday returns (Andersen-Bollerslev), split into
+      continuous and jump components via bipower variation (Barndorff-Nielsen
+      & Shephard).
+    • Volatility signature plot: RV against sampling frequency (M5/M15/H1),
+      the standard diagnostic for microstructure noise.
+    • Drift-robust (Rogers-Satchell) and gap-robust (Yang-Zhang) daily
+      estimators alongside the simpler ones.
+    • HAR-RV forecast (Corsi 2009) evaluated out-of-sample against a random
+      walk.
+
+    Data cost is zero — all of it comes from OANDA candles already available
+    on the account.
+    """
+    global _intraday_cache
+    want = [i.strip() for i in instruments.split(",") if i.strip()]
+    key = (tuple(want), har_instrument)
+    if _intraday_cache.get("key") == key and not refresh:
+        return _intraday_cache["result"]
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required")
+
+    import numpy as np
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services import volatility as vol
+
+    out, errors = {}, {}
+    for pair in want:
+        inst = PAIR_TO_OANDA.get(pair)
+        if not inst:
+            errors[pair] = "unknown instrument"
+            continue
+        try:
+            # M5 resolves microstructure; H1 buys ~10 months for HAR-RV.
+            m5 = await oanda_client.get_candles_ohlc(inst, "M5", 5000)
+            m15 = await oanda_client.get_candles_ohlc(inst, "M15", 5000)
+            h1 = await oanda_client.get_candles_ohlc(inst, "H1", 5000)
+            d1 = await oanda_client.get_candles_ohlc(inst, "D", 1200)
+        except Exception as exc:
+            errors[pair] = str(exc)[:120]
+            continue
+        if not h1:
+            errors[pair] = "no intraday candles returned"
+            continue
+
+        rv5 = vol.realized_variance_by_day(m5) if m5 else {"days": 0}
+        rvh = vol.realized_variance_by_day(h1)
+        sig = vol.volatility_signature({"M5": m5, "M15": m15, "H1": h1})
+
+        daily_est = {}
+        if len(d1) > 60:
+            o = np.array([x["open"] for x in d1]); h = np.array([x["high"] for x in d1])
+            l = np.array([x["low"] for x in d1]);  c = np.array([x["close"] for x in d1])
+            daily_est = {
+                "close_to_close": round(float(np.nanmean(vol.rv_close_to_close(c, 21))), 2),
+                "parkinson": round(float(np.nanmean(vol.rv_parkinson(h[1:], l[1:], 21))), 2),
+                "garman_klass": round(float(np.nanmean(vol.rv_garman_klass(o[1:], h[1:], l[1:], c[1:], 21))), 2),
+                "rogers_satchell": round(float(np.nanmean(vol.rv_rogers_satchell(o, h, l, c, 21))), 2),
+                "yang_zhang": round(float(np.nanmean(vol.rv_yang_zhang(o, h, l, c, 21))), 2),
+            }
+
+        entry = {
+            "daily_estimators_ann_pct": daily_est,
+            "intraday_realized_M5": {
+                k: rv5.get(k) for k in ("days", "jump_share_pct")} if rv5.get("days") else None,
+            "intraday_realized_H1": {
+                "days": rvh["days"],
+                "mean_realized_vol_ann_pct": round(float(np.mean(rvh["realized_vol_ann_pct"])), 2) if rvh["days"] else None,
+                "mean_continuous_vol_ann_pct": round(float(np.mean(rvh["continuous_vol_ann_pct"])), 2) if rvh["days"] else None,
+                "jump_share_pct": rvh["jump_share_pct"],
+                "latest_realized_vol_ann_pct": rvh["realized_vol_ann_pct"][-1] if rvh["days"] else None,
+            },
+            "volatility_signature": sig["signature"],
+        }
+        if m5 and rv5.get("days"):
+            entry["intraday_realized_M5"]["mean_realized_vol_ann_pct"] = round(
+                float(np.mean(rv5["realized_vol_ann_pct"])), 2)
+        if pair == har_instrument and rvh["days"] >= 120:
+            entry["har_rv"] = vol.har_rv_forecast(rvh["rv_daily_variance"])
+        out[pair] = entry
+
+    if not out:
+        raise HTTPException(502, f"no data: {errors}")
+
+    result = {
+        "instruments": out,
+        "signature_note": ("RV rising as sampling gets finer is microstructure noise, "
+                           "not volatility. Pick the finest interval where the curve flattens."),
+        "jump_note": ("Bipower variation estimates the continuous part only; "
+                      "RV minus BV is the jump component. They forecast differently — "
+                      "the continuous part persists, jumps do not."),
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if errors:
+        result["errors"] = errors
+    _intraday_cache = {"key": key, "result": result}
+    return result
+
+
+@router.get("/gate-telemetry")
+async def get_gate_telemetry(window_hours: float = Query(24.0, ge=0.5, le=720)):
+    """
+    Distribution of ensemble conviction and gate block reasons.
+
+    Distinguishes "the market is quiet" from "the gate is unreachable" — which
+    look identical from the outside but need opposite fixes.
+    """
+    from services import gate_telemetry
+    return gate_telemetry.summary(window_hours)
+
+
+@router.get("/engine")
+async def get_engine():
+    """Medium-frequency engine status and measured stage latencies."""
+    from services.fast_engine import fast_engine
+    return fast_engine.status()
+
+
+@router.post("/engine/{action}")
+async def set_engine(action: str):
+    """Start or stop the deterministic engine at runtime."""
+    from services.fast_engine import fast_engine
+    if action == "start":
+        settings.fast_engine_enabled = True
+        await fast_engine.start()
+    elif action == "stop":
+        settings.fast_engine_enabled = False
+        await fast_engine.stop()
+    else:
+        raise HTTPException(400, "action must be 'start' or 'stop'")
+    return fast_engine.status()
+
 
 @router.get("/status", response_model=SystemStatusOut)
 async def get_status():
@@ -672,6 +914,24 @@ async def dhj_predict_endpoint(
 # simulation artifacts while keeping real extreme moves.
 _CLEAN_MAX_PIPS = 200
 
+# Index and metal CFDs quote in points, so a routine 0.5% day on US30 (~48,000)
+# is ~240 points and would be discarded by an FX-scaled threshold. Bound each
+# asset class by a realistic 1-day move in its own units instead.
+_CLEAN_MAX_BY_CLASS = {"fx": 200.0, "index": 3000.0, "metal": 400.0}
+
+
+def _is_clean(pair: str, move_pips: Optional[float]) -> bool:
+    """
+    True when an evaluated move is usable evidence. Rejects simulation
+    artefacts (implausibly large) and exact zeros — a genuine 1-day move of
+    precisely 0.0 pips does not occur in a live market, so it means the
+    forecast was graded against a frozen price.
+    """
+    if move_pips is None or move_pips == 0:
+        return False
+    from services.market_data import asset_class
+    return abs(move_pips) <= _CLEAN_MAX_BY_CLASS.get(asset_class(pair), _CLEAN_MAX_PIPS)
+
 
 @router.get("/forecast/accuracy")
 async def forecast_accuracy():
@@ -689,7 +949,7 @@ async def forecast_accuracy():
     # Clean = evaluated AND actual move within realistic 1-day range (no sim artefacts)
     clean     = [
         l for l in evaluated
-        if l.actual_move_pips is not None and abs(l.actual_move_pips) <= _CLEAN_MAX_PIPS
+        if _is_clean(l.pair, l.actual_move_pips)
     ]
     artifacts = len(evaluated) - len(clean)
 
@@ -751,7 +1011,7 @@ async def forecast_accuracy():
                 "bs_direction_correct": l.bs_direction_correct,
                 "prob_above_spot":      l.prob_above_spot,
                 "is_simulation_artifact": (
-                    l.actual_move_pips is not None and abs(l.actual_move_pips) > _CLEAN_MAX_PIPS
+                    not _is_clean(l.pair, l.actual_move_pips)
                 ),
                 "created_at":           l.created_at.isoformat() + "Z",
                 "evaluated_at":         l.evaluated_at.isoformat() + "Z" if l.evaluated_at else None,
@@ -760,6 +1020,496 @@ async def forecast_accuracy():
             for l in recent
         ],
     }
+
+
+def _wilson_lower_bound(correct: int, n: int, z: float = 1.64) -> float:
+    """
+    Wilson score lower bound for a binomial proportion (one-sided ~95% at z=1.64).
+    Guards against small-sample mirages: a cell at 4/5 = 80% has a lower bound near
+    0.38, so it won't be mistaken for a real edge.  Returns 0.0 for n == 0.
+    """
+    if n == 0:
+        return 0.0
+    p = correct / n
+    z2 = z * z
+    denom = 1 + z2 / n
+    centre = p + z2 / (2 * n)
+    margin = z * ((p * (1 - p) / n + z2 / (4 * n * n)) ** 0.5)
+    return max(0.0, (centre - margin) / denom)
+
+
+@router.get("/forecast/edge-analysis")
+async def forecast_edge_analysis(
+    min_samples: int = Query(20, ge=5, description="Minimum cell size to report an edge"),
+    edge_threshold: float = Query(0.55, ge=0.5, le=1.0, description="Accuracy needed to flag a tradeable cell"),
+):
+    """
+    Mine the evaluated forecast log for CONDITIONAL accuracy — the subsets where
+    DHJ actually beats a coin flip — so trading can be gated to real edges rather
+    than the ~50% blended average.
+
+    Each cell reports n, raw accuracy, and a Wilson lower-confidence bound. A cell
+    is only flagged tradeable when n >= min_samples AND its lower bound > 0.50
+    (so small-sample noise can't masquerade as an edge). Cells whose lower bound
+    sits BELOW 0.50 with accuracy < 0.45 are flagged as invertible (fade them).
+    """
+    from models.orm import ForecastLog
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(5000)
+        )
+        logs = result.scalars().all()
+
+    clean = [
+        l for l in logs
+        if l.evaluated_at is not None
+        and l.direction_correct is not None
+        and _is_clean(l.pair, l.actual_move_pips)
+    ]
+
+    def cell(rows: list) -> dict:
+        n = len(rows)
+        ok = sum(1 for r in rows if r.direction_correct)
+        acc = round(ok / n, 3) if n else None
+        lb = round(_wilson_lower_bound(ok, n), 3) if n else None
+        tradeable = bool(n >= min_samples and lb is not None and lb > 0.50 and acc >= edge_threshold)
+        invertible = bool(n >= min_samples and acc is not None and acc < 0.45
+                          and _wilson_lower_bound(n - ok, n) > 0.50)
+        return {"n": n, "accuracy": acc, "lower_bound": lb,
+                "tradeable": tradeable, "invertible": invertible}
+
+    def group(key_fn) -> dict:
+        buckets: dict = {}
+        for l in clean:
+            k = key_fn(l)
+            if k is None:
+                continue
+            buckets.setdefault(k, []).append(l)
+        return {str(k): cell(v) for k, v in sorted(buckets.items())}
+
+    def hour_session(l) -> str:
+        h = l.created_at.hour
+        if 7 <= h < 12:   return "London(07-12)"
+        if 12 <= h < 17:  return "NY-overlap(12-17)"
+        if 17 <= h < 21:  return "NY(17-21)"
+        return "Asia(21-07)"
+
+    def conviction(l) -> str:
+        q = abs(l.chiral_charge)
+        if q >= 0.15: return "strong(|Q5|>=0.15)"
+        if q >= 0.05: return "mild(0.05-0.15)"
+        return "weak(<0.05)"
+
+    def agree_key(l) -> Optional[str]:
+        if not l.bs_expected_direction:
+            return None
+        return "agree" if l.bs_expected_direction == l.expected_direction else "disagree"
+
+    # Disagreement × conviction — the combination most likely to concentrate edge
+    def disagree_conviction(l) -> Optional[str]:
+        a = agree_key(l)
+        if a != "disagree":
+            return None
+        return f"disagree+{conviction(l)}"
+
+    breakdowns = {
+        "by_pair":                 group(lambda l: l.pair),
+        "by_signal":               group(lambda l: l.signal),
+        "by_signal_direction":     group(lambda l: f"{l.signal}/{l.expected_direction}"),
+        "by_dhj_bs_agreement":     group(agree_key),
+        "by_conviction":           group(conviction),
+        "by_session_utc":          group(hour_session),
+        "by_pair_x_agreement":     group(lambda l: f"{l.pair}/{agree_key(l)}" if agree_key(l) else None),
+        "by_disagree_conviction":  group(disagree_conviction),
+    }
+
+    # Collect everything flagged tradeable or invertible, sorted by strength
+    edges = []
+    for dim, cells in breakdowns.items():
+        for k, c in cells.items():
+            if c["tradeable"] or c["invertible"]:
+                edges.append({"dimension": dim, "cell": k, **c})
+    edges.sort(key=lambda e: e["lower_bound"], reverse=True)
+
+    overall_ok = sum(1 for l in clean if l.direction_correct)
+    return {
+        "clean_evaluated": len(clean),
+        "overall_accuracy": round(overall_ok / len(clean), 3) if clean else None,
+        "params": {"min_samples": min_samples, "edge_threshold": edge_threshold},
+        "edges_found": edges,
+        "breakdowns": breakdowns,
+        "note": (
+            "tradeable = n>=min_samples and Wilson lower bound > 0.50 and accuracy >= threshold. "
+            "invertible = accuracy < 0.45 with lower bound (of being wrong) > 0.50 — fade these. "
+            "Empty edges_found means no subset beats coin flip at this confidence yet."
+        ),
+    }
+
+
+@router.get("/forecast/edge-map-validation")
+async def edge_map_validation():
+    """
+    Replay the per-pair edge map over the forecast log and split its accuracy
+    into IN-SAMPLE (created on/before the cutoff — where the edges were found)
+    vs OUT-OF-SAMPLE (created after the cutoff — the honest test). The edges are
+    real only if the out-of-sample numbers hold up. Pure replay, no new logging.
+    """
+    from datetime import datetime as _dt
+    from models.orm import ForecastLog
+    from services.edge_map import recommend, was_correct
+
+    try:
+        cutoff = _dt.fromisoformat(settings.edge_map_cutoff)
+    except (ValueError, TypeError):
+        cutoff = None
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(20000)
+        )
+        logs = result.scalars().all()
+
+    clean = [
+        l for l in logs
+        if l.evaluated_at is not None and l.direction_correct is not None
+        and _is_clean(l.pair, l.actual_move_pips)
+    ]
+
+    def summarize(rows: list) -> dict:
+        # rows is a list of (cell_key, correct_bool)
+        per_cell: dict = {}
+        for key, correct in rows:
+            per_cell.setdefault(key, []).append(correct)
+        out = {}
+        for key, results in sorted(per_cell.items()):
+            n = len(results); ok = sum(1 for c in results if c)
+            out[key] = {
+                "n": n,
+                "accuracy": round(ok / n, 3) if n else None,
+                "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+            }
+        n = len(rows); ok = sum(1 for _, c in rows if c)
+        return {
+            "overall": {
+                "n": n,
+                "accuracy": round(ok / n, 3) if n else None,
+                "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+            },
+            "by_cell": out,
+        }
+
+    in_sample, out_sample = [], []
+    for l in clean:
+        action, _side = recommend(l.pair, l.expected_direction, l.bs_expected_direction)
+        if action == "SKIP":
+            continue
+        correct = was_correct(action, l.direction_correct)
+        if correct is None:
+            continue
+        agreement = "agree" if l.expected_direction == l.bs_expected_direction else "disagree"
+        key = f"{l.pair}/{agreement}/{action.lower()}"
+        bucket = out_sample if (cutoff and l.created_at > cutoff) else in_sample
+        bucket.append((key, correct))
+
+    return {
+        "cutoff": settings.edge_map_cutoff,
+        "edge_map": settings.edge_map,
+        "in_sample": summarize(in_sample),
+        "out_of_sample": summarize(out_sample),
+        "verdict_note": (
+            "Promote a cell to live trading only when its OUT-OF-SAMPLE lower_bound > 0.50 "
+            "with a real sample (n >= ~20 independent days). out_of_sample.overall.n grows as "
+            "the agent keeps forecasting; check back in 1-2 weeks. In-sample reproduces the "
+            "discovery numbers and is NOT evidence on its own."
+        ),
+    }
+
+
+@router.get("/forecast/ensemble-accuracy")
+async def ensemble_accuracy():
+    """
+    Head-to-head: the independent ensemble model vs DHJ on the SAME pairs and
+    horizons (shadow mode). Reports overall and high-conviction accuracy plus
+    per-signal vote accuracy, with Wilson lower bounds so we don't promote noise.
+    """
+    from models.orm import EnsembleForecastLog, ForecastLog
+
+    async with AsyncSessionLocal() as db:
+        eres = await db.execute(
+            select(EnsembleForecastLog).order_by(desc(EnsembleForecastLog.created_at)).limit(5000)
+        )
+        elogs = eres.scalars().all()
+        dres = await db.execute(
+            select(ForecastLog).order_by(desc(ForecastLog.created_at)).limit(5000)
+        )
+        dlogs = dres.scalars().all()
+
+    def acc(rows: list) -> dict:
+        rows = [r for r in rows if r.direction_correct is not None
+                and _is_clean(r.pair, r.actual_move_pips)]
+        n = len(rows)
+        ok = sum(1 for r in rows if r.direction_correct)
+        return {
+            "n": n,
+            "accuracy": round(ok / n, 3) if n else None,
+            "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+        }
+
+    e_clean = [l for l in elogs if l.evaluated_at is not None]
+    high_conv = [l for l in e_clean if l.high_conviction]
+
+    # Per-signal standalone accuracy: does each vote, alone, beat coin flip?
+    per_signal = {}
+    for name, attr in [("trend", "vote_trend"), ("mean_revert", "vote_mean_revert"),
+                       ("carry", "vote_carry"), ("usd_strength", "vote_usd_strength"),
+                       ("positioning", "vote_positioning")]:
+        voted = []
+        for l in e_clean:
+            v = getattr(l, attr)
+            if v == 0 or not _is_clean(l.pair, l.actual_move_pips):
+                continue
+            correct = (v > 0 and l.actual_move_pips > 0) or (v < 0 and l.actual_move_pips < 0)
+            # reuse a tiny shim object isn't needed — count inline
+            voted.append(correct)
+        n = len(voted); ok = sum(1 for c in voted if c)
+        per_signal[name] = {
+            "n": n,
+            "accuracy": round(ok / n, 3) if n else None,
+            "lower_bound": round(_wilson_lower_bound(ok, n), 3) if n else None,
+        }
+
+    return {
+        "ensemble": {
+            "overall":          acc(e_clean),
+            "high_conviction":  acc(high_conv),
+            "per_signal_vote":  per_signal,
+        },
+        "dhj": {
+            "overall": acc(dlogs),
+        },
+        "verdict_note": (
+            "Promote the ensemble to trading only if high_conviction.lower_bound > 0.50 "
+            "AND it clears DHJ on out-of-sample data. lower_bound <= 0.50 means still a coin flip."
+        ),
+    }
+
+
+@router.get("/feeds/status")
+async def feeds_status():
+    """
+    Health of the ensemble's new information feeds: OANDA crowd positioning
+    per pair, and the economic-calendar blackout state / upcoming events.
+    """
+    from services import econ_calendar, sentiment
+    from services.oanda_client import PAIR_TO_OANDA
+
+    positioning = {}
+    for pair in PAIR_TO_OANDA:
+        data = sentiment.get_positioning(pair)
+        if data:
+            positioning[pair] = {
+                "long_pct": data["long_pct"],
+                "short_pct": data["short_pct"],
+                "vote": sentiment.positioning_vote(pair),
+                "as_of": data.get("time", ""),
+            }
+
+    upcoming = [
+        {
+            "title": e["title"],
+            "currency": e["currency"],
+            "at": e["at"].isoformat(),
+        }
+        for e in econ_calendar.upcoming_high_impact(24.0)[:10]
+    ]
+    blackouts = {
+        pair: bool(econ_calendar.is_blackout(pair)) for pair in PAIR_TO_OANDA
+    }
+
+    from services.market_data import market_data as _md
+    from services.oanda_client import oanda_client as _oc
+    return {
+        "price_feed": {
+            **_md.feed_health(),
+            "quarantined_instruments": sorted(_oc._quarantined),
+            "real_bars": {p: _md.real_bar_count(p) for p in PAIR_TO_OANDA},
+        },
+        "positioning": positioning,
+        "positioning_pairs_cached": len(positioning),
+        "fade_threshold_pct": settings.positioning_fade_threshold,
+        "calendar_events_loaded": len(econ_calendar._events),
+        "upcoming_high_impact_24h": upcoming,
+        "blackout_now": blackouts,
+    }
+
+
+@router.get("/readiness")
+async def go_live_readiness():
+    """
+    Auto-computed Aug-1 go/no-go scorecard:
+      • Trading window (go_nogo_window_start, the exit-hysteresis era):
+        realized P&L, win rate, average win vs average loss.
+      • Forecast window (clean_data_start, the single-instance era):
+        ensemble conviction>=2 directional accuracy with Wilson lower bound.
+      • Feed health right now.
+    """
+    from models.orm import EnsembleForecastLog
+    from services import econ_calendar, sentiment
+    from services.oanda_client import PAIR_TO_OANDA
+
+    trade_start = datetime.fromisoformat(settings.go_nogo_window_start)
+    fc_start = datetime.fromisoformat(settings.clean_data_start)
+
+    async with AsyncSessionLocal() as db:
+        trades = (await db.execute(
+            select(Trade).where(
+                Trade.timestamp >= trade_start,
+                Trade.action.in_(("CLOSE", "SL_HIT", "TP_HIT")),
+            )
+        )).scalars().all()
+        elogs = (await db.execute(
+            select(EnsembleForecastLog).where(
+                EnsembleForecastLog.created_at >= fc_start,
+                EnsembleForecastLog.direction_correct.isnot(None),
+                EnsembleForecastLog.conviction >= 2,
+            )
+        )).scalars().all()
+
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    pnl_total = round(sum(t.pnl for t in trades), 2)
+    avg_win = round(sum(wins) / len(wins), 2) if wins else 0.0
+    avg_loss = round(sum(losses) / len(losses), 2) if losses else 0.0
+
+    clean = [e for e in elogs
+             if _is_clean(e.pair, e.actual_move_pips)]
+    n = len(clean)
+    ok = sum(1 for e in clean if e.direction_correct)
+    acc = round(ok / n, 3) if n else None
+    lb = round(_wilson_lower_bound(ok, n), 3) if n else None
+
+    positioning_cached = sum(
+        1 for p in PAIR_TO_OANDA if sentiment.get_positioning(p)
+    )
+
+    criteria = {
+        "pnl_positive": pnl_total > 0,
+        "payoff_ratio_ok": bool(wins) and bool(losses) and avg_win >= abs(avg_loss),
+        "ensemble_acc_over_52": acc is not None and n >= 50 and acc > 0.52,
+        "feeds_healthy": positioning_cached >= 6 and len(econ_calendar._events) > 0,
+    }
+
+    return {
+        "as_of": datetime.utcnow().isoformat(),
+        "trading_window_since": settings.go_nogo_window_start,
+        "trades": {
+            "n": len(trades), "wins": len(wins), "losses": len(losses),
+            "win_rate": round(len(wins) / len(trades), 3) if trades else None,
+            "pnl_total": pnl_total, "avg_win": avg_win, "avg_loss": avg_loss,
+        },
+        "forecast_window_since": settings.clean_data_start,
+        "ensemble_conviction2plus": {
+            "n": n, "accuracy": acc, "wilson_lower_bound": lb,
+            "excluded_artifacts": len(elogs) - n,
+        },
+        "feeds": {
+            "positioning_pairs_cached": positioning_cached,
+            "calendar_events_loaded": len(econ_calendar._events),
+        },
+        "criteria": criteria,
+        "verdict": "GO" if all(criteria.values()) else "NOT YET — see criteria",
+    }
+
+
+_backtest_cache: dict = {}
+_index_backtest_cache: dict = {}
+
+
+@router.get("/backtest/index-trend")
+async def backtest_index_trend(refresh: bool = Query(False)):
+    """
+    Backtest the documented index/metals premia on OANDA CFD candles:
+    buy-and-hold baseline, 12m momentum long/flat, and long/short.
+    """
+    global _index_backtest_cache
+    if _index_backtest_cache and not refresh:
+        return _index_backtest_cache
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    from services.oanda_client import oanda_client
+    from services.backtest import run_index_trend, INDEX_META
+
+    candles, fetch_errors = {}, {}
+    for sym, meta in INDEX_META.items():
+        try:
+            series = await oanda_client.get_daily_candles(meta["oanda"], count=3800)
+            if len(series) > 400:
+                candles[sym] = series
+        except Exception as exc:
+            fetch_errors[sym] = str(exc)[:120]
+
+    if not candles:
+        raise HTTPException(502, f"No candle data fetched: {fetch_errors}")
+
+    result = {
+        "buy_hold": run_index_trend(candles, mode="buy_hold"),
+        "momentum_long_flat": run_index_trend(candles, mode="long_flat"),
+        "momentum_long_short": run_index_trend(candles, mode="long_short"),
+        "candles_fetched": {s: len(c) for s, c in candles.items()},
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if fetch_errors:
+        result["fetch_errors"] = fetch_errors
+    _index_backtest_cache = result
+    return result
+
+
+@router.get("/backtest/carry-trend")
+async def backtest_carry_trend(refresh: bool = Query(False)):
+    """
+    Run the multi-week carry+trend backtest over ~15 years of OANDA daily
+    candles (fetched live, one request per pair). Cached until refresh=true.
+    """
+    global _backtest_cache
+    if _backtest_cache and not refresh:
+        return _backtest_cache
+
+    if not settings.oanda_api_key:
+        raise HTTPException(503, "OANDA credentials required for historical candles")
+
+    from services.oanda_client import oanda_client, PAIR_TO_OANDA
+    from services.backtest import run_carry_trend, run_cross_carry, BT_EXTRA_OANDA
+
+    universe = {**PAIR_TO_OANDA, **BT_EXTRA_OANDA}
+    candles, fetch_errors = {}, {}
+    for pair, instrument in universe.items():
+        try:
+            series = await oanda_client.get_daily_candles(instrument, count=3800)
+            if len(series) > 200:
+                candles[pair] = series
+        except Exception as exc:
+            fetch_errors[pair] = str(exc)[:120]
+
+    if not candles:
+        raise HTTPException(502, f"No candle data fetched: {fetch_errors}")
+
+    base8 = {p: c for p, c in candles.items() if p in PAIR_TO_OANDA}
+    result = {
+        # original test: time-series carry+trend on the USD-majors universe
+        "time_series_majors": run_carry_trend(base8),
+        # pre-registered follow-up: classic cross-sectional carry on the
+        # rate-dispersed 16-pair universe (JPY/CHF funding crosses included)
+        "cross_sectional_carry": run_cross_carry(candles),
+        "cross_sectional_carry_trend_veto": run_cross_carry(candles, trend_veto=True),
+        "candles_fetched": {p: len(c) for p, c in candles.items()},
+        "computed_at": datetime.utcnow().isoformat(),
+    }
+    if fetch_errors:
+        result["fetch_errors"] = fetch_errors
+    _backtest_cache = result
+    return result
 
 
 # ── Model Registry ────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>David — AI FX Trading Platform</title>
+  <title>Popper — AI FX Trading Platform</title>
   <style>
     /* ── Reset & base ─────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -151,7 +151,7 @@
   <!-- Header -->
   <header class="header">
     <div class="status-dot" id="ws-dot"></div>
-    <h1>David <span>/ AI FX Trading</span></h1>
+    <h1>Popper <span>/ AI FX Trading</span></h1>
     <span class="badge" id="mode-badge">PAPER</span>
     <span class="badge demo" id="agent-mode-badge">DEMO</span>
     <div class="header-right">
@@ -202,7 +202,10 @@
 
       <!-- Open positions -->
       <div class="card">
-        <div class="card-title">Open Positions</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Open Positions</div>
+          <button class="decision-copy" id="btn-copy-positions" onclick="copyPositions()">Copy</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -216,6 +219,60 @@
               <tr><td colspan="11" class="empty-state">No open positions</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Go-Live Readiness -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Go-Live Readiness (Aug 1)</div>
+          <button class="decision-copy" id="btn-copy-readiness" onclick="copyReadiness()">Copy</button>
+        </div>
+        <div id="readiness-body" style="font-size:12px;color:var(--muted)">Loading…</div>
+      </div>
+
+      <!-- Volatility Research -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Volatility Research (realized · GARCH · spillover)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-vol" onclick="runVolResearch()">Run Daily</button>
+            <button class="decision-copy" id="btn-run-intraday" onclick="runIntradayVol()">Run Intraday</button>
+            <button class="decision-copy" id="btn-copy-vol" onclick="copyVolResearch()">Copy</button>
+          </div>
+        </div>
+        <div id="vol-body" style="font-size:12px;color:var(--muted)">
+          Press Run to compute realized volatility (close-to-close, Parkinson, Garman-Klass),
+          evaluate GARCH(1,1) out-of-sample against EWMA and constant-variance baselines,
+          and test cross-market volatility spillover. Takes ~30-60s.
+        </div>
+      </div>
+
+      <!-- Carry+Trend Backtest -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Carry+Trend Backtest (multi-week model)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-backtest" onclick="runBacktest()">Run</button>
+            <button class="decision-copy" id="btn-copy-backtest" onclick="copyBacktest()">Copy</button>
+          </div>
+        </div>
+        <div id="backtest-body" style="font-size:12px;color:var(--muted)">
+          Press Run to backtest the weekly carry+momentum portfolio over ~15 years of OANDA daily candles (takes ~10s).
+        </div>
+      </div>
+
+      <!-- Index/Gold Trend Backtest -->
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div class="card-title" style="margin-bottom:0">Index/Gold Backtest (equity premium + momentum)</div>
+          <div style="display:flex;gap:6px">
+            <button class="decision-copy" id="btn-run-idxbt" onclick="runIndexBacktest()">Run</button>
+            <button class="decision-copy" id="btn-copy-idxbt" onclick="copyIndexBacktest()">Copy</button>
+          </div>
+        </div>
+        <div id="idxbt-body" style="font-size:12px;color:var(--muted)">
+          Press Run to backtest buy-and-hold and 12-month momentum on SPX500, NAS100, US30, JP225, UK100, DAX, EU50, gold and silver (~15y of OANDA CFD candles).
         </div>
       </div>
 
@@ -412,69 +469,34 @@ function handlePricesUpdate(msg) {
 function updateRates(rates) {
   const grid = $('rates-grid');
   Object.entries(rates).forEach(([pair, r]) => {
-    let row = document.querySelector(`[data-pair="${pair}"]`);
+    // Find existing row or create one with a consistent, data-field structure.
+    let row = grid.querySelector(`[data-pair="${pair}"]`);
     if (!row) {
       row = document.createElement('div');
       row.className = 'rate-row';
       row.setAttribute('data-pair', pair);
       row.innerHTML = `<span class="rate-pair">${pair}</span>
         <span style="text-align:right">
-          <div class="rate-price" data-field="mid"></div>
+          <div class="rate-price" data-field="mid" style="font-family:var(--font)"></div>
           <div class="rate-spread" data-field="spread"></div>
         </span>`;
-      grid.innerHTML = '';
       grid.appendChild(row);
-      // re-add all
     }
-    const prev = prevPrices[pair];
     const midEl = row.querySelector('[data-field="mid"]');
     const spreadEl = row.querySelector('[data-field="spread"]');
+    if (!midEl || !spreadEl) return;
+
+    const prev = prevPrices[pair];
+    if (prev && r.mid !== prev.mid) {
+      midEl.className = 'rate-price ' + (r.mid > prev.mid ? 'pos' : 'neg');
+      row.classList.remove('flash-up', 'flash-down');
+      void row.offsetWidth;   // restart the CSS flash animation
+      row.classList.add(r.mid > prev.mid ? 'flash-up' : 'flash-down');
+    }
     midEl.textContent = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
     spreadEl.textContent = r.spread_pips.toFixed(1) + ' pip';
-    if (prev) {
-      if (r.mid > prev.mid) { row.classList.remove('flash-down'); row.classList.add('flash-up'); midEl.className = 'rate-price pos'; }
-      else if (r.mid < prev.mid) { row.classList.remove('flash-up'); row.classList.add('flash-down'); midEl.className = 'rate-price neg'; }
-    }
     prevPrices[pair] = r;
   });
-
-  // Rebuild grid cleanly
-  const pairs = Object.keys(rates);
-  if (grid.children.length !== pairs.length) {
-    grid.innerHTML = '';
-    pairs.forEach(pair => {
-      const r = rates[pair];
-      const row = document.createElement('div');
-      row.className = 'rate-row';
-      row.setAttribute('data-pair', pair);
-      const pips = r.spread_pips.toFixed(1);
-      row.innerHTML = `<span class="rate-pair">${pair}</span>
-        <span style="text-align:right">
-          <div class="rate-price" style="font-family:var(--font)">${r.mid.toFixed(pair.includes('JPY') ? 3 : 5)}</div>
-          <div class="rate-spread">${pips} pip</div>
-        </span>`;
-      grid.appendChild(row);
-    });
-  } else {
-    pairs.forEach(pair => {
-      const r = rates[pair];
-      const row = grid.querySelector(`[data-pair="${pair}"]`);
-      if (!row) return;
-      const prev = prevPrices[pair];
-      const midEl = row.querySelector('.rate-price');
-      if (midEl) {
-        const newMid = r.mid.toFixed(pair.includes('JPY') ? 3 : 5);
-        if (prev && r.mid !== prev.mid) {
-          midEl.className = 'rate-price ' + (r.mid > prev.mid ? 'pos' : 'neg');
-          row.classList.remove('flash-up', 'flash-down');
-          void row.offsetWidth;
-          row.classList.add(r.mid > prev.mid ? 'flash-up' : 'flash-down');
-        }
-        midEl.textContent = newMid;
-      }
-      prevPrices[pair] = r;
-    });
-  }
 }
 
 function updateMetrics(p) {
@@ -533,9 +555,281 @@ async function fetchOandaBalance() {
   } catch (_) {}
 }
 
+let _lastVol = null;
+
+async function runIntradayVol() {
+  const btn = $('btn-run-intraday');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/research/intraday-volatility?refresh=true');
+    const d = await r.json();
+    _lastVol = d;
+    if (d.detail) { $('vol-body').innerHTML = `<span class="neg">${d.detail}</span>`; return; }
+    let html = '';
+    for (const [pair, e] of Object.entries(d.instruments || {})) {
+      const de = e.daily_estimators_ann_pct || {};
+      const h1 = e.intraday_realized_H1 || {};
+      const sig = e.volatility_signature || {};
+      const sigStr = Object.entries(sig)
+        .map(([g,v]) => `${g} <b>${v.mean_realized_vol_ann_pct}%</b>`).join(' · ') || 'n/a';
+      html += `<div style="margin-bottom:12px">
+        <div style="color:var(--text);font-weight:600">${pair}</div>
+        <div>Daily estimators — CC ${de.close_to_close ?? '–'}% · Park ${de.parkinson ?? '–'}%
+             · GK ${de.garman_klass ?? '–'}% · RS ${de.rogers_satchell ?? '–'}%
+             · <b>YZ ${de.yang_zhang ?? '–'}%</b></div>
+        <div>Intraday RV (H1, ${h1.days ?? 0}d) — total <b>${h1.mean_realized_vol_ann_pct ?? '–'}%</b>
+             · continuous ${h1.mean_continuous_vol_ann_pct ?? '–'}%
+             · jumps <b class="${(h1.jump_share_pct||0) > 20 ? 'neg':'pos'}">${h1.jump_share_pct ?? '–'}%</b>
+             · latest ${h1.latest_realized_vol_ann_pct ?? '–'}%</div>
+        <div style="color:var(--muted)">Signature: ${sigStr}</div>`;
+      if (e.har_rv && !e.har_rv.error) {
+        const h = e.har_rv;
+        html += `<div style="margin-top:3px">HAR-RV — OOS R² <b>${h.oos_r_squared}</b>,
+                 beats random walk: <b class="${h.beats_random_walk?'pos':'neg'}">${h.beats_random_walk}</b>
+                 (d ${h.coefficients.daily} · w ${h.coefficients.weekly} · m ${h.coefficients.monthly})</div>`;
+      }
+      html += '</div>';
+    }
+    $('vol-body').innerHTML = html + `<div style="color:var(--muted);margin-top:6px">${d.signature_note}</div>`;
+  } catch (err) {
+    $('vol-body').innerHTML = `<span class="neg">Failed: ${err}</span>`;
+  } finally { btn.textContent = 'Run Intraday'; btn.disabled = false; }
+}
+
+async function runVolResearch() {
+  const btn = $('btn-run-vol');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/research/volatility?refresh=true');
+    const d = await r.json();
+    _lastVol = d;
+    if (d.detail) { $('vol-body').innerHTML = `<span class="neg">${d.detail}</span>`; return; }
+
+    const rv = d.realized_volatility || {};
+    const rows = Object.entries(rv).sort((a,b) => b[1].close_to_close_ann_pct - a[1].close_to_close_ann_pct)
+      .map(([k,v]) => `<tr><td>${k}</td><td style="text-align:right">${v.close_to_close_ann_pct}%</td>`
+        + `<td style="text-align:right">${v.parkinson_ann_pct}%</td>`
+        + `<td style="text-align:right">${v.garman_klass_ann_pct}%</td></tr>`).join('');
+
+    const g = d.garch_out_of_sample || {};
+    let garchHtml = '<span class="neg">unavailable</span>';
+    if (g.garch11) {
+      const better = g.garch11.qlike < g.constant_variance.qlike;
+      garchHtml = `<b class="${better ? 'pos' : 'neg'}">${g.instrument}</b> — QLIKE: `
+        + `GARCH <b>${g.garch11.qlike}</b> · EWMA ${g.ewma_riskmetrics.qlike} · constant ${g.constant_variance.qlike}`
+        + ` &nbsp;|&nbsp; OOS R² <b>${g.garch11.oos_r_squared ?? 'n/a'}</b>`
+        + `<div style="margin-top:3px">${g.verdict || ''}</div>`;
+    }
+
+    const sp = d.spillover || {};
+    let spillHtml = '<span class="neg">unavailable</span>';
+    if (sp.diebold_yilmaz && !sp.diebold_yilmaz.error) {
+      const dy = sp.diebold_yilmaz;
+      const net = Object.entries(dy.net_transmitter_pct).slice(0, 6)
+        .map(([k,v]) => `${k} <b class="${v >= 0 ? 'pos' : 'neg'}">${v > 0 ? '+' : ''}${v}</b>`).join(' · ');
+      const links = (sp.granger_significant_at_5pct || []).slice(0, 6)
+        .map(x => `${x.from}→${x.to}`).join(', ') || 'none';
+      spillHtml = `Total spillover index <b>${dy.total_spillover_index_pct}%</b> `
+        + `(VAR ${dy.var_lags} lags, ${dy.horizon_days}d horizon, n=${sp.observations})`
+        + `<div style="margin-top:3px">Net transmitters: ${net}</div>`
+        + `<div style="margin-top:3px;color:var(--muted)">Top Granger links: ${links}</div>`;
+    }
+
+    $('vol-body').innerHTML =
+      `<div style="color:var(--text);font-weight:600;margin-bottom:4px">Realized volatility (annualised, ${d.window_days}d window)</div>`
+      + `<div class="table-wrap" style="max-height:230px;overflow-y:auto"><table>`
+      + `<thead><tr><th>Instrument</th><th style="text-align:right">Close-Close</th>`
+      + `<th style="text-align:right">Parkinson</th><th style="text-align:right">Garman-Klass</th></tr></thead>`
+      + `<tbody>${rows}</tbody></table></div>`
+      + `<div style="color:var(--text);font-weight:600;margin:10px 0 3px">GARCH(1,1) out-of-sample</div>${garchHtml}`
+      + `<div style="color:var(--text);font-weight:600;margin:10px 0 3px">Cross-market spillover</div>${spillHtml}`;
+  } catch (err) {
+    $('vol-body').innerHTML = `<span class="neg">Failed: ${err}</span>`;
+  } finally { btn.textContent = 'Run'; btn.disabled = false; }
+}
+
+function copyVolResearch() {
+  if (!_lastVol) return;
+  navigator.clipboard.writeText(
+    `Volatility Research — ${new Date().toUTCString().slice(0,25)} UTC\n` +
+    JSON.stringify(_lastVol, null, 2)
+  ).then(() => {
+    const b = $('btn-copy-vol');
+    if (b) { b.textContent = 'Copied!'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastBacktest = null;
+
+async function runBacktest() {
+  const btn = $('btn-run-backtest');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/backtest/carry-trend?refresh=true');
+    const d = await r.json();
+    _lastBacktest = d;
+    if (d.error || d.detail) {
+      $('backtest-body').innerHTML = `<span class="neg">${d.error || d.detail}</span>`;
+      return;
+    }
+    const SECTIONS = [
+      ['time_series_majors', 'Time-series carry+trend (8 USD majors)'],
+      ['cross_sectional_carry', 'Cross-sectional carry (16 pairs, long top-3 / short bottom-3)'],
+      ['cross_sectional_carry_trend_veto', 'Cross-sectional carry + trend veto'],
+    ];
+    let html = '';
+    for (const [key, label] of SECTIONS) {
+      const s = d[key];
+      if (!s) continue;
+      if (s.error) { html += `<div style="margin-bottom:8px"><b>${label}:</b> <span class="neg">${s.error}</span></div>`; continue; }
+      const h = s.headline, a = s.attribution_pct_per_year;
+      html += `
+        <div style="margin-bottom:10px">
+          <div style="color:var(--text);font-weight:600;margin-bottom:2px">${label}</div>
+          <div style="font-size:13px">
+            <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
+            &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
+            &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
+            &nbsp;|&nbsp; ${s.window.years}y → <b>${h.final_multiple}×</b>
+            &nbsp;·&nbsp; carry ${a.financing_carry}%/y, costs ${a.spread_costs}%/y</div>
+        </div>`;
+    }
+    $('backtest-body').innerHTML = html || '<span class="neg">No results</span>';
+  } catch (err) {
+    $('backtest-body').innerHTML = `<span class="neg">Backtest failed: ${err}</span>`;
+  } finally {
+    btn.textContent = 'Run'; btn.disabled = false;
+  }
+}
+
+function copyBacktest() {
+  if (!_lastBacktest) return;
+  navigator.clipboard.writeText(
+    `Carry+Trend Backtest — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastBacktest, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-backtest');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastIndexBacktest = null;
+
+async function runIndexBacktest() {
+  const btn = $('btn-run-idxbt');
+  btn.textContent = 'Running…'; btn.disabled = true;
+  try {
+    const r = await apiFetch('/api/backtest/index-trend?refresh=true');
+    const d = await r.json();
+    _lastIndexBacktest = d;
+    if (d.error || d.detail) {
+      $('idxbt-body').innerHTML = `<span class="neg">${d.error || d.detail}</span>`;
+      return;
+    }
+    const SECTIONS = [
+      ['buy_hold', 'Buy & hold (equity risk premium baseline)'],
+      ['momentum_long_flat', '12m momentum — long/flat'],
+      ['momentum_long_short', '12m momentum — long/short'],
+    ];
+    let html = '';
+    for (const [key, label] of SECTIONS) {
+      const s = d[key];
+      if (!s) continue;
+      if (s.error) { html += `<div style="margin-bottom:8px"><b>${label}:</b> <span class="neg">${s.error}</span></div>`; continue; }
+      const h = s.headline, a = s.attribution_pct_per_year;
+      html += `
+        <div style="margin-bottom:10px">
+          <div style="color:var(--text);font-weight:600;margin-bottom:2px">${label}</div>
+          <div style="font-size:13px">
+            <b class="${h.cagr_pct >= 0 ? 'pos' : 'neg'}">CAGR ${h.cagr_pct}%</b>
+            &nbsp;|&nbsp; Sharpe <b>${h.sharpe}</b>
+            &nbsp;|&nbsp; MaxDD <b class="neg">${h.max_drawdown_pct}%</b>
+            &nbsp;|&nbsp; ${s.window.years}y → <b>${h.final_multiple}×</b>
+            &nbsp;·&nbsp; financing ${a.financing_carry}%/y, costs ${a.spread_costs}%/y</div>
+        </div>`;
+    }
+    if (d.fetch_errors) {
+      html += `<div style="color:var(--yellow)">Unavailable: ${Object.keys(d.fetch_errors).join(', ')}</div>`;
+    }
+    $('idxbt-body').innerHTML = html || '<span class="neg">No results</span>';
+  } catch (err) {
+    $('idxbt-body').innerHTML = `<span class="neg">Backtest failed: ${err}</span>`;
+  } finally {
+    btn.textContent = 'Run'; btn.disabled = false;
+  }
+}
+
+function copyIndexBacktest() {
+  if (!_lastIndexBacktest) return;
+  navigator.clipboard.writeText(
+    `Index/Gold Backtest — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastIndexBacktest, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-idxbt');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastReadiness = null;
+
+async function fetchReadiness() {
+  try {
+    const r = await apiFetch('/api/readiness');
+    const d = await r.json();
+    _lastReadiness = d;
+    const t = d.trades, e = d.ensemble_conviction2plus, c = d.criteria;
+    const mark = ok => ok ? '<span class="pos">✓</span>' : '<span class="neg">✗</span>';
+    $('readiness-body').innerHTML = `
+      <div style="font-size:14px;font-weight:700;margin-bottom:6px;color:${d.verdict === 'GO' ? 'var(--green)' : 'var(--yellow)'}">${d.verdict}</div>
+      <div>${mark(c.pnl_positive)} P&L since ${d.trading_window_since}: <b class="${t.pnl_total >= 0 ? 'pos' : 'neg'}">$${t.pnl_total}</b>
+        (${t.wins}W / ${t.losses}L${t.win_rate !== null ? ', ' + Math.round(t.win_rate * 100) + '%' : ''})</div>
+      <div>${mark(c.payoff_ratio_ok)} Avg win $${t.avg_win} vs avg loss $${t.avg_loss}</div>
+      <div>${mark(c.ensemble_acc_over_52)} Ensemble conv-2+ accuracy: ${e.accuracy !== null ? (e.accuracy * 100).toFixed(1) + '% (n=' + e.n + ', LB ' + e.wilson_lower_bound + ')' : 'no data yet'}</div>
+      <div>${mark(c.feeds_healthy)} Feeds: ${d.feeds.positioning_pairs_cached}/8 positioning, ${d.feeds.calendar_events_loaded} calendar events</div>`;
+  } catch (err) { /* card is non-critical */ }
+}
+
+function copyReadiness() {
+  if (!_lastReadiness) return;
+  navigator.clipboard.writeText(
+    `Go-Live Readiness — ${new Date().toUTCString().slice(0, 25)} UTC\n` +
+    JSON.stringify(_lastReadiness, null, 2)
+  ).then(() => {
+    const btn = $('btn-copy-readiness');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
+let _lastPositions = [];
+
+function copyPositions() {
+  if (!_lastPositions.length) return;
+  const lines = [
+    `Open Positions — ${new Date().toUTCString().slice(0, 25)} UTC`,
+    '',
+    '#      PAIR       DIR   SIZE      ENTRY        CURRENT      SL           TP           PNL       OPENED',
+    '─'.repeat(100),
+  ];
+  _lastPositions.forEach(p => {
+    const dp  = p.pair.includes('JPY') ? 3 : 5;
+    const pnl = (p.unrealised_pnl > 0 ? '+' : '') + p.unrealised_pnl.toFixed(2);
+    lines.push(
+      `${String(p.id).padEnd(6)} ${p.pair.padEnd(10)} ${p.direction.padEnd(5)} ` +
+      `${String(p.size.toLocaleString()).padEnd(9)} ${p.entry_price.toFixed(dp).padEnd(12)} ` +
+      `${p.current_price.toFixed(dp).padEnd(12)} ${(p.stop_loss ? p.stop_loss.toFixed(dp) : '—').padEnd(12)} ` +
+      `${(p.take_profit ? p.take_profit.toFixed(dp) : '—').padEnd(12)} ${pnl.padEnd(9)} ${relTime(p.opened_at)}`
+    );
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(() => {
+    const btn = $('btn-copy-positions');
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); }
+  });
+}
+
 async function fetchPositions() {
   const r = await apiFetch('/api/positions?status=open');
   const data = await r.json();
+  _lastPositions = data;
   const tbody = $('positions-tbody');
   if (!data.length) {
     tbody.innerHTML = '<tr><td colspan="11" class="empty-state">No open positions</td></tr>';
@@ -854,9 +1148,11 @@ updateClock();
     fetchDecisions(),
     fetchTotalPnL(),
     fetchForecastAccuracy(),
+    fetchReadiness(),
   ]);
   // Refresh every 10s
   setInterval(() => { fetchPositions(); fetchTrades(); fetchDecisions(); fetchTotalPnL(); }, 10_000);
+  setInterval(fetchReadiness, 60_000);
   // Refresh OANDA balance every 15s
   setInterval(() => { if (_tradingMode === 'oanda') fetchOandaBalance(); }, 15_000);
   // Refresh mode badge every 60s (rarely changes)

@@ -13,6 +13,9 @@ from config import settings
 if TYPE_CHECKING:
     from services.portfolio_service import PortfolioService
 
+# USD is the base (left) currency — 1 unit = $1 USD regardless of quote price
+_USD_BASE_PAIRS = frozenset({"USD/JPY", "USD/CAD", "USD/CHF"})
+
 
 @dataclass
 class RiskCheckResult:
@@ -53,7 +56,7 @@ class RiskManager:
             )
 
         # 3. Position size limit
-        notional = size * entry_price
+        notional = size if pair in _USD_BASE_PAIRS else size * entry_price
         max_notional = state["balance"] * settings.max_position_size_pct
         if notional > max_notional:
             return RiskCheckResult(
@@ -141,7 +144,8 @@ class RiskManager:
         pip_value_per_unit = pip_size / entry_price if "JPY" not in pair else pip_size
         units = risk_amount / (stop_distance * (1 / entry_price if entry_price > 1 else 1))
         # Cap to max position size
-        max_units = (state["balance"] * settings.max_position_size_pct) / entry_price
+        max_cap = state["balance"] * settings.max_position_size_pct
+        max_units = max_cap if pair in _USD_BASE_PAIRS else max_cap / entry_price
         return round(min(units, max_units))
 
 
