@@ -11,12 +11,13 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
-logger = logging.getLogger("david.tools")
+logger = logging.getLogger("popper.tools")
 
 from config import settings
 from services.market_data import market_data, PAIR_CONFIG
 from services.portfolio_service import portfolio_service
 from services.order_service import order_service
+from services.risk_gate import risk_gate
 import services.risk_manager as _risk_mod
 from services.dirac_predictor import DiracPredictor
 
@@ -92,7 +93,22 @@ TOOL_DEFINITIONS = [
         "description": (
             "Open a new BUY or SELL position. Always provide stop_loss. "
             "Providing take_profit is strongly recommended. "
-            "Include your reasoning so it can be logged."
+            "Include your reasoning so it can be logged.\n"
+            "HARD SIGNAL GATE (enforced server-side — orders that fail are rejected, "
+            "so check these BEFORE calling to avoid wasted attempts):\n"
+            "  1. Call get_price_forecast for the pair first (within the last ~3 min) "
+            "and read its signal_gate verdict — it is authoritative.\n"
+            "  2. Ensemble conviction must be >= 2 (at least two net independent "
+            "votes agreeing). FLAT direction = no trade.\n"
+            "  3. Your direction must MATCH the ensemble direction (BUY if UP, SELL "
+            "if DOWN). Never trade against the ensemble.\n"
+            "  4. No entries during an event blackout (high-impact release imminent).\n"
+            "  5. EUR/GBP is blocked entirely (chronic churn).\n"
+            "VOLATILITY/COST FLOOR (also enforced server-side): the market must be "
+            "active enough to clear the spread. Orders are rejected when ATR < 4 pips "
+            "or the take-profit distance is < 3x the current spread. In dead, tight-range "
+            "markets (ATR 1-2 pips) do NOT trade — the spread eats the edge. Wait for "
+            "real movement."
         ),
         "input_schema": {
             "type": "object",
@@ -103,20 +119,32 @@ TOOL_DEFINITIONS = [
                     "type": "number",
                     "description": "Units to trade. Use get_risk_metrics to guide sizing.",
                 },
+                "stop_pips": {
+                    "type": "number",
+                    "description": (
+                        "PREFERRED: stop distance in pips. The server anchors the stop "
+                        "to the real entry quote at execution time, so price drift can "
+                        "never invalidate your geometry. Use with take_profit_pips."
+                    ),
+                },
+                "take_profit_pips": {
+                    "type": "number",
+                    "description": "Take-profit distance in pips (defaults to stop_pips x 1.6).",
+                },
                 "stop_loss": {
                     "type": "number",
-                    "description": "Stop-loss price (required).",
+                    "description": "Absolute stop-loss price. Legacy — prefer stop_pips.",
                 },
                 "take_profit": {
                     "type": "number",
-                    "description": "Take-profit price (recommended).",
+                    "description": "Absolute take-profit price. Legacy — prefer take_profit_pips.",
                 },
                 "reasoning": {
                     "type": "string",
                     "description": "Your analysis and reason for this trade.",
                 },
             },
-            "required": ["pair", "direction", "size", "stop_loss", "reasoning"],
+            "required": ["pair", "direction", "size", "reasoning"],
         },
     },
     {
@@ -142,12 +170,14 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_price_forecast",
         "description": (
-            "Run the Dirac-Heston-Jump (DHJ) probabilistic model to forecast price "
-            "direction for a currency pair. Returns expected move in pips, probability "
-            "of price rising above spot, chiral charge (market sentiment proxy), and a "
-            "summary signal (STRONG_BULLISH / MILD_BULLISH / NEUTRAL / MILD_BEARISH / "
-            "STRONG_BEARISH). Use this AFTER get_technical_indicators to confirm or "
-            "challenge a trade signal before placing an order."
+            "Run the ensemble direction forecast for a currency pair. Five independent "
+            "voters (trend, mean-reversion, carry/rate-differential, USD breadth, and "
+            "OANDA crowd positioning) each vote -1/0/+1; direction is the sign of the "
+            "net vote and conviction is its magnitude. Also returns event_blackout "
+            "(high-impact economic release imminent -> conviction zeroed) and a "
+            "signal_gate verdict telling you directly whether this pair is tradeable "
+            "and in which direction. REQUIRED before placing any order — the gate "
+            "reads this forecast."
         ),
         "input_schema": {
             "type": "object",
@@ -170,7 +200,14 @@ async def handle_tool_call(name: str, inputs: Dict[str, Any]) -> Any:
     if name == "get_fx_rates":
         return await _get_fx_rates(inputs["pairs"])
     if name == "get_technical_indicators":
-        return market_data.calculate_indicators(inputs["pair"])
+        _p = inputs["pair"]
+        _ind = market_data.calculate_indicators(_p)
+        if _ind:
+            from services.market_data import asset_class as _acls, stop_bounds as _sb
+            _mn, _mx = _sb(_p)
+            _ind = {**_ind, "asset_class": _acls(_p),
+                    "min_stop_pips": _mn, "max_stop_pips": _mx}
+        return _ind
     if name == "get_price_history":
         return await _get_price_history(inputs["pair"], inputs.get("periods", 50))
     if name == "get_portfolio_status":
@@ -262,6 +299,21 @@ async def _get_risk_metrics() -> dict:
             state["daily_pnl"] > -(balance * settings.max_daily_loss_pct)
             and state["open_positions"] < settings.max_open_positions
         ),
+        "shadow_mode": risk_gate.shadow_mode_active,
+        "execution_tier": settings.execution_tier,
+        "execution_note": (
+            "SHADOW VALIDATION MODE: orders are logged but NOT executed. This is "
+            "intentional — live trading is paused until an edge validates "
+            "out-of-sample. Analyze and place orders normally; a [SHADOW] response "
+            "means it worked as intended. Do not treat it as an error or retry."
+        ) if risk_gate.shadow_mode_active else (
+            f"MICRO-LIVE TIER: orders EXECUTE for real but the server scales agent "
+            f"orders to {settings.micro_size_factor:.0%} of requested size (capped at "
+            f"${settings.micro_max_notional:.0f} notional, daily loss budget "
+            f"-${settings.micro_daily_loss_limit:.0f}). Small positions and small P&L "
+            f"are INTENTIONAL — never request larger sizes to compensate; size your "
+            f"orders normally and let the server scale them."
+        ) if settings.execution_tier == "micro" else "LIVE: orders execute for real at full size.",
     }
 
 
@@ -269,19 +321,39 @@ async def _place_order(inputs: dict) -> dict:
     pair = inputs["pair"]
     direction = inputs["direction"]
     size = float(inputs["size"])
-    stop_loss = float(inputs["stop_loss"])
-    take_profit = inputs.get("take_profit")
-    if take_profit is not None:
-        take_profit = float(take_profit)
     reasoning = inputs.get("reasoning", "")
 
-    # Risk check
     bar = market_data.get_price(pair)
     if bar is None:
         return {"success": False, "message": f"No price for {pair}"}
-
     entry_price = bar.ask if direction == "BUY" else bar.bid
     pip = market_data.get_pip_size(pair)
+
+    # Pips-based geometry (PREFERRED): the server anchors SL/TP to the real
+    # entry quote at execution time, so price drift between the agent's data
+    # fetch and order placement can never invalidate the geometry.
+    stop_pips_req = inputs.get("stop_pips")
+    tp_pips_req = inputs.get("take_profit_pips")
+    if stop_pips_req is not None:
+        stop_pips_req = float(stop_pips_req)
+        tp_pips_req = float(tp_pips_req) if tp_pips_req is not None else round(stop_pips_req * 1.6, 1)
+        # provisional absolute prices from the current quote for the advisory
+        # risk check — open_position re-derives them from the real quote
+        if direction == "BUY":
+            stop_loss = round(entry_price - stop_pips_req * pip, 5)
+            take_profit = round(entry_price + tp_pips_req * pip, 5)
+        else:
+            stop_loss = round(entry_price + stop_pips_req * pip, 5)
+            take_profit = round(entry_price - tp_pips_req * pip, 5)
+    else:
+        if inputs.get("stop_loss") is None:
+            return {"success": False,
+                    "message": "A stop is required: pass stop_pips (preferred) or stop_loss."}
+        stop_loss = float(inputs["stop_loss"])
+        take_profit = inputs.get("take_profit")
+        if take_profit is not None:
+            take_profit = float(take_profit)
+
     current_stop_pips = round(abs(entry_price - stop_loss) / pip, 1) if stop_loss is not None else None
 
     check = await _risk_mod.risk_manager.check_new_order(
@@ -323,6 +395,8 @@ async def _place_order(inputs: dict) -> dict:
         take_profit=take_profit,
         reasoning=reasoning,
         source="agent",
+        stop_pips_req=stop_pips_req,
+        tp_pips_req=tp_pips_req if stop_pips_req is not None else None,
     )
     result = {"success": ok, "message": msg}
     if pos:
@@ -344,9 +418,23 @@ async def _scan_all_pairs() -> list:
     for pair in PAIR_CONFIG:
         ind = market_data.calculate_indicators(pair)
         if not ind:
+            # Never skip silently: say WHY this instrument is unavailable so a
+            # data problem cannot masquerade as 'no setups'.
+            from services.market_data import asset_class as _ac
+            rows.append({
+                "pair": pair, "asset_class": _ac(pair), "status": "NO_DATA",
+                "real_bars": market_data.real_bar_count(pair),
+                "bars_required": 30,
+                "note": "indicators unavailable — insufficient real price history",
+            })
             continue
+        from services.market_data import asset_class as _acls, stop_bounds as _sb
+        _mn, _mx = _sb(pair)
         rows.append({
             "pair": pair,
+            "asset_class": _acls(pair),
+            "min_stop_pips": _mn,
+            "max_stop_pips": _mx,
             "price": ind["current_price"],
             "trend": ind["trend"],
             "rsi": ind["rsi"],
@@ -364,28 +452,24 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
 
     spot = bar.mid
     oanda_pair = pair.replace("/", "")
+    ind = market_data.calculate_indicators(pair)
 
+    # ── DHJ benchmark (retired from decisions — best-effort, never blocking) ──
+    # Runs silently so the out-of-sample validation record keeps accumulating.
+    # Any failure here is logged and skipped; the ensemble below still answers.
+    result = None
     try:
         predictor = DiracPredictor.instance()
-    except FileNotFoundError as exc:
-        return {"error": f"DHJ model not available: {exc}"}
-
-    # Derive delta_cp (spinor initial asymmetry) from current RSI momentum.
-    # RSI > 50 → bullish bias → positive delta_cp; RSI < 50 → negative.
-    # MACD histogram agreement amplifies; disagreement dampens.
-    ind = market_data.calculate_indicators(pair)
-    if ind:
-        rsi = ind.get("rsi", 50.0)
-        macd_hist = ind.get("macd_histogram", 0.0)
-        delta_cp = (rsi - 50.0) / 100.0           # range [-0.5, +0.5]
-        # dampen when RSI and MACD disagree
-        if (delta_cp > 0 and macd_hist < 0) or (delta_cp < 0 and macd_hist > 0):
-            delta_cp *= 0.5
-        delta_cp = max(-0.5, min(0.5, delta_cp))
-    else:
-        delta_cp = 0.0
-
-    try:
+        # delta_cp (spinor initial asymmetry) seeded from RSI momentum
+        if ind:
+            rsi = ind.get("rsi", 50.0)
+            macd_hist = ind.get("macd_histogram", 0.0)
+            delta_cp = (rsi - 50.0) / 100.0           # range [-0.5, +0.5]
+            if (delta_cp > 0 and macd_hist < 0) or (delta_cp < 0 and macd_hist > 0):
+                delta_cp *= 0.5
+            delta_cp = max(-0.5, min(0.5, delta_cp))
+        else:
+            delta_cp = 0.0
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
@@ -398,80 +482,112 @@ async def _get_price_forecast(pair: str, horizon_days: float = 1.0) -> dict:
             ),
         )
     except Exception as exc:
-        return {"error": f"DHJ prediction failed: {exc}"}
+        logger.warning("DHJ benchmark unavailable for %s (non-blocking): %s", pair, exc)
 
-    # Compute P(S_T > spot) by integrating density above current price
-    prices = result.prices
-    probs = result.prob_dhj
-    prob_up = 0.0
-    for i in range(len(prices) - 1):
-        if prices[i] >= spot:
-            prob_up += probs[i] * (prices[i + 1] - prices[i])
-    prob_up = round(min(max(prob_up, 0.0), 1.0), 3)
+    # DHJ is RETIRED from the decision path (~50% over 800+ evaluations, all
+    # conditional slices non-stationary). It still logs silently as a benchmark
+    # so the out-of-sample validation keeps accumulating — but nothing in this
+    # block reaches the agent.
+    if result is not None:
+        prices = result.prices
+        probs = result.prob_dhj
+        prob_up = 0.0
+        for i in range(len(prices) - 1):
+            if prices[i] >= spot:
+                prob_up += probs[i] * (prices[i + 1] - prices[i])
+        prob_up = round(min(max(prob_up, 0.0), 1.0), 3)
 
-    pip = market_data.get_pip_size(pair)
-    expected_move_pips = round((result.mean_dhj - spot) / pip, 1)
+        pip = market_data.get_pip_size(pair)
+        expected_move_pips = round((result.mean_dhj - spot) / pip, 1)
 
-    q5 = result.chiral_charge
-    # Q₅ (chiral charge) reflects spinor field asymmetry seeded from RSI momentum.
-    # Thresholds calibrated to the RSI-driven delta_cp scale (range ±0.5):
-    #   |Q5| > 0.15 → STRONG (RSI ~65+/35-)   |Q5| > 0.05 → MILD (RSI ~55+/45-)
-    if q5 > 0.15 and prob_up > 0.52:
-        signal = "STRONG_BULLISH"
-    elif q5 > 0.05:
-        signal = "MILD_BULLISH"
-    elif q5 < -0.15 and prob_up < 0.48:
-        signal = "STRONG_BEARISH"
-    elif q5 < -0.05:
-        signal = "MILD_BEARISH"
+        q5 = result.chiral_charge
+        if q5 > 0.15 and prob_up > 0.52:
+            signal = "STRONG_BULLISH"
+        elif q5 > 0.05:
+            signal = "MILD_BULLISH"
+        elif q5 < -0.15 and prob_up < 0.48:
+            signal = "STRONG_BEARISH"
+        elif q5 < -0.05:
+            signal = "MILD_BEARISH"
+        else:
+            signal = "NEUTRAL"
+
+        asyncio.create_task(_log_forecast_to_db(
+            pair=pair,
+            spot_price=spot,
+            horizon_days=float(horizon_days),
+            signal=signal,
+            expected_direction="UP" if q5 > 0 else "DOWN",
+            expected_move_pips=expected_move_pips,
+            prob_above_spot=prob_up,
+            chiral_charge=round(q5, 4),
+            dhj_expected_price=round(result.mean_dhj, 6),
+            bs_expected_price=round(result.mean_bs, 6),
+            bs_expected_direction="UP" if result.mean_bs > spot else "DOWN",
+        ))
+    if settings.ensemble_shadow_enabled:
+        asyncio.create_task(_log_ensemble_shadow(pair, float(spot), float(horizon_days)))
+
+    # ── The decision engine: the independent ensemble ─────────────────────────
+    from services.ensemble_model import predict as ensemble_predict
+    fc = ensemble_predict(pair)
+    if fc is None:
+        return {"error": f"Insufficient indicator data for {pair} — cannot forecast"}
+
+    # Cache for the hard pre-trade signal gate (synchronous — must be set before
+    # the agent can place an order off this forecast in the same cycle).
+    from services.signal_cache import put_signal
+    put_signal(
+        pair=pair,
+        direction=fc.direction,
+        conviction=fc.conviction,
+        event_blackout=fc.event_blackout,
+    )
+
+    # Tell the agent directly whether this pair passes the hard gate and in which
+    # direction — it acts on the real verdict instead of re-deriving the rules.
+    from services.risk_gate import risk_gate
+    if fc.direction in ("UP", "DOWN"):
+        _suggested = "BUY" if fc.direction == "UP" else "SELL"
+        _gate = risk_gate.approve_signal(pair=pair, direction=_suggested, source="agent")
+        _gate_out = {
+            "tradeable": _gate.allowed,
+            "reason": _gate.reason,
+            "trade_direction": _suggested if _gate.allowed else None,
+        }
     else:
-        signal = "NEUTRAL"
+        _gate_out = {
+            "tradeable": False,
+            "reason": "Ensemble direction is FLAT — independent signals cancel out; no trade",
+            "trade_direction": None,
+        }
 
-    output = {
+    # Telemetry: build the distribution that answers "why aren't we trading?"
+    from services import gate_telemetry
+    gate_telemetry.record(pair, fc.conviction, _gate_out["tradeable"],
+                          None if _gate_out["tradeable"] else _gate_out["reason"])
+
+    return {
         "pair": pair,
         "spot": round(spot, 6),
         "horizon_days": horizon_days,
-        # ── Directional signal ────────────────────────────────────────────────
-        # signal and expected_direction are both derived from Q₅ (chiral_charge),
-        # NOT from mean_dhj.  At 1-day horizons with near-zero carry the DHJ mean
-        # barely moves from spot (±1-2 pip MC noise), so mean_dhj direction is
-        # uninformative noise.  Q₅ is seeded from RSI momentum and is the true
-        # directional predictor.
-        "signal": signal,
-        "expected_direction": "UP" if q5 > 0 else "DOWN",
-        "chiral_charge": round(q5, 4),
-        "prob_above_spot": prob_up,
-        # ── Model drift (carry-adjusted expected price drift, NOT a magnitude bet) ──
-        # At 1-day horizon this is typically ±1-3 pips regardless of actual move.
-        # Use it only for model diagnostics, not for sizing or direction decisions.
-        "model_drift_pips": expected_move_pips,
-        # ── Volatility & tail risk ─────────────────────────────────────────────
-        "dhj_higher_tail_risk": result.call_dhj > result.call_bs,
-        "implied_vol_annualized": round(result.avg_variance ** 0.5, 4),
-        # ── Reference prices (for diagnostic comparison) ───────────────────────
-        "dhj_expected_price": round(result.mean_dhj, 6),
-        "bs_expected_price": round(result.mean_bs, 6),
-        "dhj_call_price": round(result.call_dhj, 6),
-        "bs_call_price": round(result.call_bs, 6),
-        "delta_cp": round(delta_cp, 4),
-        "rsi_at_forecast": round(ind["rsi"], 1) if ind else None,
+        # ── Ensemble forecast (five independent voters) ────────────────────────
+        # votes: trend (MACD+SMA), mean_revert (RSI/BB extremes), carry (rate
+        # differential), usd_strength (cross-pair USD breadth), positioning
+        # (OANDA crowd — contrarian). Each is -1/0/+1; direction = sign of sum.
+        "direction": fc.direction,
+        "conviction": fc.conviction,
+        "net_vote": fc.net_vote,
+        "votes": fc.votes,
+        "high_conviction": fc.high_conviction,
+        # True → a high-impact scheduled release for either currency is imminent;
+        # conviction is zeroed because release spikes are unpredictable.
+        "event_blackout": fc.event_blackout,
+        "signal_gate": _gate_out,
+        # ── Context ────────────────────────────────────────────────────────────
+        "rsi": round(ind["rsi"], 1) if ind else None,
+        "implied_vol_annualized": round(result.avg_variance ** 0.5, 4) if result is not None else None,
     }
-
-    asyncio.create_task(_log_forecast_to_db(
-        pair=pair,
-        spot_price=spot,
-        horizon_days=float(horizon_days),
-        signal=signal,
-        expected_direction=output["expected_direction"],
-        expected_move_pips=expected_move_pips,
-        prob_above_spot=prob_up,
-        chiral_charge=round(q5, 4),
-        dhj_expected_price=round(result.mean_dhj, 6),
-        bs_expected_price=round(result.mean_bs, 6),
-        bs_expected_direction="UP" if result.mean_bs > spot else "DOWN",
-    ))
-
-    return output
 
 
 async def _log_forecast_to_db(**kwargs) -> None:
@@ -484,3 +600,36 @@ async def _log_forecast_to_db(**kwargs) -> None:
             await db.commit()
     except Exception as exc:
         logger.warning("Failed to log forecast: %s", exc)
+
+
+async def _log_ensemble_shadow(pair: str, spot: float, horizon_days: float) -> None:
+    """Compute and persist the ensemble model's shadow prediction for this pair."""
+    try:
+        from database import AsyncSessionLocal
+        from models.orm import EnsembleForecastLog
+        from services.ensemble_model import predict
+
+        fc = predict(pair)
+        if fc is None:
+            return
+        horizon_at = datetime.utcnow() + timedelta(days=horizon_days)
+        async with AsyncSessionLocal() as db:
+            db.add(EnsembleForecastLog(
+                pair=pair,
+                spot_price=spot,
+                horizon_days=horizon_days,
+                horizon_at=horizon_at,
+                direction=fc.direction,
+                net_vote=fc.net_vote,
+                conviction=fc.conviction,
+                high_conviction=fc.high_conviction,
+                vote_trend=fc.votes.get("trend", 0),
+                vote_mean_revert=fc.votes.get("mean_revert", 0),
+                vote_carry=fc.votes.get("carry", 0),
+                vote_usd_strength=fc.votes.get("usd_strength", 0),
+                vote_positioning=fc.votes.get("positioning", 0),
+                event_blackout=fc.event_blackout,
+            ))
+            await db.commit()
+    except Exception as exc:
+        logger.warning("Failed to log ensemble shadow forecast: %s", exc)

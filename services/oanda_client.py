@@ -14,7 +14,7 @@ import httpx
 
 from config import settings
 
-logger = logging.getLogger("david.oanda_client")
+logger = logging.getLogger("popper.oanda_client")
 
 # ── Pair mappings ─────────────────────────────────────────────────────────────
 
@@ -27,6 +27,14 @@ PAIR_TO_OANDA: dict[str, str] = {
     "EUR/GBP": "EUR_GBP",
     "NZD/USD": "NZD_USD",
     "USD/CHF": "USD_CHF",
+    # Index and metal CFDs
+    "SPX500":  "SPX500_USD",
+    "NAS100":  "NAS100_USD",
+    "US30":    "US30_USD",
+    "DE30":    "DE30_EUR",
+    "UK100":   "UK100_GBP",
+    "XAU/USD": "XAU_USD",
+    "XAG/USD": "XAG_USD",
 }
 
 OANDA_TO_PAIR: dict[str, str] = {v: k for k, v in PAIR_TO_OANDA.items()}
@@ -35,8 +43,15 @@ OANDA_TO_PAIR: dict[str, str] = {v: k for k, v in PAIR_TO_OANDA.items()}
 _JPY_PAIRS = {"USD_JPY", "EUR_JPY", "GBP_JPY", "AUD_JPY", "CAD_JPY", "NZD_JPY", "CHF_JPY"}
 
 
+# Index/metal CFDs quote in points, not 5-decimal FX pips
+_POINT_INSTRUMENTS = {"SPX500_USD", "NAS100_USD", "US30_USD", "DE30_EUR",
+                      "UK100_GBP", "XAU_USD"}
+
+
 def _price_decimals(oanda_instrument: str) -> int:
     """Return the number of decimal places to use for a given OANDA instrument."""
+    if oanda_instrument in _POINT_INSTRUMENTS:
+        return 2
     return 3 if oanda_instrument in _JPY_PAIRS else 5
 
 
@@ -62,6 +77,28 @@ class OandaClient:
 
     # ── Price feed ────────────────────────────────────────────────────────────
 
+    # Instruments OANDA has rejected for this account. A single unknown
+    # instrument makes the pricing endpoint 400 the ENTIRE request, so one bad
+    # symbol would otherwise freeze every price including FX. Quarantined
+    # symbols are skipped by both the REST and streaming paths.
+    _quarantined: set = set()
+
+    async def _probe_instruments(self, instruments: list[str]) -> set:
+        """Return the subset OANDA rejects, by pricing each one individually."""
+        base, headers = self._setup()
+        url = f"{base}/v3/accounts/{settings.oanda_account_id}/pricing"
+        bad = set()
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for inst in instruments:
+                try:
+                    r = await client.get(url, headers=headers,
+                                         params={"instruments": inst})
+                    if r.status_code != 200:
+                        bad.add(inst)
+                except Exception:
+                    bad.add(inst)
+        return bad
+
     async def get_prices(self, pairs: list[str]) -> dict:
         """
         Fetch current bid/ask prices for a list of standard pairs (e.g. "EUR/USD").
@@ -70,14 +107,18 @@ class OandaClient:
 
         Returns the raw OANDA response dict with a "prices" list, each item
         containing: instrument, bids, asks, tradeable, status.
-        Raises on non-2xx responses.
+
+        Self-healing: OANDA 400s the whole request if any single instrument is
+        unknown to the account. On failure this probes each symbol, quarantines
+        the offenders, and retries with the survivors, so one bad symbol can
+        never take the price feed down.
         """
         if not settings.oanda_api_key or not settings.oanda_account_id:
             raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
 
-        instruments = ",".join(
-            PAIR_TO_OANDA[p] for p in pairs if p in PAIR_TO_OANDA
-        )
+        wanted = [PAIR_TO_OANDA[p] for p in pairs
+                  if p in PAIR_TO_OANDA and PAIR_TO_OANDA[p] not in self._quarantined]
+        instruments = ",".join(wanted)
         if not instruments:
             return {"prices": []}
 
@@ -87,8 +128,186 @@ class OandaClient:
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)
+            if resp.status_code == 200:
+                return resp.json()
+            # 400 usually means one unknown instrument poisoned the batch.
+            # Find the offenders, quarantine them, and serve the rest.
+            logger.error(
+                "OANDA pricing returned %s for %d instruments — probing for "
+                "unsupported symbols", resp.status_code, len(wanted),
+            )
+            bad = await self._probe_instruments(wanted)
+            if not bad:
+                resp.raise_for_status()
+                return resp.json()
+            self._quarantined |= bad
+            logger.critical(
+                "QUARANTINED unsupported OANDA instruments: %s — price feed "
+                "continues with the remaining %d. Remove them from PAIR_CONFIG "
+                "or correct the symbol names.",
+                ", ".join(sorted(bad)), len(wanted) - len(bad),
+            )
+            survivors = [i for i in wanted if i not in bad]
+            if not survivors:
+                return {"prices": []}
+            resp2 = await client.get(url, headers=headers,
+                                     params={"instruments": ",".join(survivors)})
+            resp2.raise_for_status()
+            return resp2.json()
+
+    # ── Sentiment: aggregate client positioning ───────────────────────────────
+
+    async def get_position_book(self, oanda_instrument: str) -> Optional[dict]:
+        """
+        Fetch OANDA's aggregate client position book for an instrument and
+        reduce it to overall long/short percentages.
+
+        GET /v3/instruments/{instrument}/positionBook
+
+        Each bucket carries longCountPercent / shortCountPercent as a share of
+        ALL open positions, so summing across buckets yields total crowd
+        positioning. OANDA refreshes this data ~every 20 minutes.
+
+        Returns {"long_pct": float, "short_pct": float, "time": str} or None
+        when unavailable (no credentials, unsupported instrument, API error).
+        """
+        if not settings.oanda_api_key:
+            return None
+
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/positionBook"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                book = resp.json().get("positionBook", {})
+        except Exception as exc:
+            logger.warning("Position book fetch failed for %s: %s", oanda_instrument, exc)
+            return None
+
+        buckets = book.get("buckets", [])
+        if not buckets:
+            return None
+        long_pct = sum(float(b.get("longCountPercent", 0.0)) for b in buckets)
+        short_pct = sum(float(b.get("shortCountPercent", 0.0)) for b in buckets)
+        return {
+            "long_pct": round(long_pct, 1),
+            "short_pct": round(short_pct, 1),
+            "time": book.get("time", ""),
+        }
+
+    # ── Historical candles (for backtesting) ─────────────────────────────────
+
+    async def get_intraday_candles(self, oanda_instrument: str,
+                                   granularity: str = "M5", count: int = 200) -> list:
+        """
+        Fetch recent intraday candles as (bid, ask) pairs for history bootstrap.
+
+        GET /v3/instruments/{instrument}/candles?granularity=M5&price=BA&count=N
+
+        Lets the platform start with REAL market history immediately instead of
+        either fabricating synthetic bars (which corrupts indicators) or waiting
+        for live ticks to accumulate (which blocks trading for the warm-up).
+        Returns [] on any failure — the caller falls back to live accumulation.
+        """
+        if not settings.oanda_api_key:
+            return []
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": granularity, "price": "BA", "count": str(min(count, 500))}
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    logger.warning("Candle bootstrap %s: HTTP %s", oanda_instrument, resp.status_code)
+                    return []
+                out = []
+                for c in resp.json().get("candles", []):
+                    if not c.get("complete"):
+                        continue
+                    try:
+                        out.append((float(c["bid"]["c"]), float(c["ask"]["c"])))
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                return out
+        except Exception as exc:
+            logger.warning("Candle bootstrap failed for %s: %s", oanda_instrument, exc)
+            return []
+
+    async def get_candles_ohlc(self, oanda_instrument: str, granularity: str = "H1",
+                               count: int = 5000) -> list:
+        """
+        Full OHLC candles at any granularity, with timestamps — for research.
+
+        Granularity drives what can be measured: M5 resolves intraday
+        microstructure and the volatility signature plot, H1 gives ~10 months
+        of history for daily realized variance and HAR-RV, D covers 14+ years
+        for long-run estimators. OANDA caps a request at 5000 candles.
+
+        Returns [{"time", "date", "open", "high", "low", "close"}, ...]
+        oldest-first, complete candles only. [] on any failure.
+        """
+        if not settings.oanda_api_key:
+            return []
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": granularity, "price": "M", "count": str(min(count, 5000))}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers, params=params)
+                if resp.status_code != 200:
+                    logger.warning("Candles %s %s: HTTP %s", oanda_instrument,
+                                   granularity, resp.status_code)
+                    return []
+                out = []
+                for c in resp.json().get("candles", []):
+                    if not c.get("complete"):
+                        continue
+                    m = c["mid"]
+                    out.append({
+                        "time": c["time"],
+                        "date": c["time"][:10],
+                        "open": float(m["o"]), "high": float(m["h"]),
+                        "low": float(m["l"]), "close": float(m["c"]),
+                    })
+                return out
+        except Exception as exc:
+            logger.warning("Candle fetch failed %s %s: %s", oanda_instrument, granularity, exc)
+            return []
+
+    async def get_daily_candles(self, oanda_instrument: str, count: int = 3800) -> list:
+        """
+        Fetch up to `count` daily mid-price candles (OANDA max 5000/request).
+
+        GET /v3/instruments/{instrument}/candles?granularity=D&price=M&count=N
+
+        Returns [{"date", "open", "high", "low", "close"}, ...] oldest-first,
+        complete candles only. High and low are required by the range-based
+        volatility estimators (Parkinson, Garman-Klass), which are far more
+        efficient than close-to-close for a given sample size.
+        Raises on missing credentials or API errors.
+        """
+        if not settings.oanda_api_key:
+            raise RuntimeError("OANDA_API_KEY must be set for historical candles")
+        base, headers = self._setup()
+        url = f"{base}/v3/instruments/{oanda_instrument}/candles"
+        params = {"granularity": "D", "price": "M", "count": str(min(count, 5000))}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
             resp.raise_for_status()
-            return resp.json()
+            out = []
+            for c in resp.json().get("candles", []):
+                if c.get("complete"):
+                    m = c["mid"]
+                    out.append({
+                        "date": c["time"][:10],
+                        "open": float(m["o"]),
+                        "high": float(m["h"]),
+                        "low": float(m["l"]),
+                        "close": float(m["c"]),
+                    })
+            return out
 
     # ── Order execution ───────────────────────────────────────────────────────
 
@@ -266,8 +485,11 @@ class OandaClient:
         if not settings.oanda_api_key or not settings.oanda_account_id:
             raise RuntimeError("OANDA_API_KEY and OANDA_ACCOUNT_ID must be set")
 
+        # Same poisoning risk as the REST endpoint: one unknown instrument makes
+        # the whole stream 400. Skip anything already quarantined.
         instruments = ",".join(
-            PAIR_TO_OANDA[p] for p in pairs if p in PAIR_TO_OANDA
+            PAIR_TO_OANDA[p] for p in pairs
+            if p in PAIR_TO_OANDA and PAIR_TO_OANDA[p] not in self._quarantined
         )
         if not instruments:
             return

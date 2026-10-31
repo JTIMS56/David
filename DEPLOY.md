@@ -1,4 +1,4 @@
-# David FX Platform — Deployment Guide
+# Popper FX Platform — Deployment Guide
 
 ## Recommended hosting: DigitalOcean (~$39/month)
 

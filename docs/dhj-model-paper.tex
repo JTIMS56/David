@@ -1,0 +1,684 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{titlesec}
+\usepackage{caption}
+
+\captionsetup{font=small,labelfont=bf}
+\titlespacing*{\section}{0pt}{1.1em}{0.5em}
+\titlespacing*{\subsection}{0pt}{0.8em}{0.35em}
+\setlength{\abovedisplayskip}{5pt}
+\setlength{\belowdisplayskip}{5pt}
+\setlength{\parskip}{0.25em}
+
+\newtheorem{proposition}{Proposition}
+
+\title{\vspace{-2.5em}\bfseries A Telegraph-Equation Price Model with Stochastic\\
+Variance and Double-Exponential Jumps:\\
+Specification, Validation, and a Structural Null Result}
+
+\author{David Belyn\thanks{Correspondence: \texttt{dbelyn@hotmail.com}. Working paper, draft.}}
+
+\date{September 2026}
+
+\begin{document}
+\maketitle
+\vspace{-1.8em}
+
+\begin{abstract}
+\noindent
+We specify and validate the Dirac--Heston--Jump (DHJ) model, a hybrid
+transition-density model for foreign exchange that replaces the
+Black--Scholes diffusion with a Goldstein--Kac telegraph process on a
+log-price lattice, couples it to a Heston stochastic-variance path, and
+overlays Kou double-exponential jumps. The telegraph representation gives
+finite propagation speed and non-Gaussian tails at finite relaxation rate
+$\kappa$, and recovers Black--Scholes exactly as $\kappa \to \infty$. We give
+the full continuum and discrete specification, a Monte-Carlo-outer /
+PDE-inner numerical scheme, and a seven-part validation suite: the model
+reproduces Garman--Kohlhagen call prices to $0.15\%$ relative error at
+$N=1600$ lattice sites, satisfies the martingale condition
+$\mathbb{E}[S_T]=S_0 e^{(r_d-r_f)T}$ to within $0.003\%$, preserves that
+condition under compensated jumps to $0.07\%$, and exhibits zero negative
+densities and zero measurable boundary mass loss.
+
+The model was then deployed as a directional forecaster and produced
+$49$--$50\%$ accuracy over more than $2{,}500$ logged one-day forecasts. We
+show this was not a calibration failure but structurally predetermined, and
+prove it two ways. First, we derive in closed form that the model's
+``chiral charge'' signal satisfies
+$\bar{Q}_5(T) = \delta_{cp}\,e^{-(2\kappa+r_d)T}$ exactly: it is the initial
+spinor asymmetry times a deterministic scalar, carrying no information from
+the variance process, the jumps, or the PDE itself. Since $\delta_{cp}$ was
+seeded from RSI, the apparatus computed a damped momentum oscillator; we
+confirm the identity numerically to six significant figures. Second, a
+correctly specified risk-neutral model is a martingale by construction, so
+its directional content is exactly the carry; at a one-day horizon this caps
+achievable accuracy at $50.28\%$ against a break-even threshold of $51.08\%$
+after spread, an expectancy of $-0.89$ pips per trade. The validation suite
+that certified the model as correct is the same evidence proving it cannot
+be directionally profitable at that horizon. We argue this is a general trap
+in applying derivative-pricing machinery to directional forecasting.
+\end{abstract}
+
+\vspace{-0.8em}
+\section{Introduction}
+
+Option-pricing models are calibrated to reproduce the risk-neutral
+transition density $p^{\mathbb{Q}}(S_T \mid S_0)$. Directional trading
+requires the real-world density $p^{\mathbb{P}}$. The two coincide only up
+to a market price of risk that pricing models, by design, do not estimate.
+This paper documents what happens when a carefully validated $\mathbb{Q}$-measure
+model is deployed as a $\mathbb{P}$-measure forecaster, and extracts the
+general lesson.
+
+The model studied here, Dirac--Heston--Jump (DHJ), was built to address
+three documented deficiencies of Black--Scholes in FX: Gaussian tails,
+constant volatility, and continuous paths. The first is addressed by
+replacing the diffusion with a telegraph (Goldstein--Kac) process, which
+propagates at finite speed $c$ and relaxes to diffusion at rate $2\kappa$,
+producing excess kurtosis and skew of order $1/\kappa$; the second by a
+Heston CIR variance path; the third by a Kou jump overlay. Each ingredient
+is standard. The contribution is the combination, the numerical treatment
+required to make it stable, and the negative result with its structural
+explanation.
+
+\section{Model Specification}
+\label{sec:spec}
+
+\subsection{State variables}
+
+Let $x = \log(S/S_0)$ be the log-price relative to spot and $\tau$ calendar
+time in years. The state is a two-component real field
+$\psi = (\psi_+, \psi_-)$ on $x$, where $\psi_+$ is right-moving probability
+flux and $\psi_-$ is left-moving flux. Both are real and non-negative: this
+is a Euclidean (imaginary-time) formulation, so the components are genuine
+densities, not quantum amplitudes. We define
+\begin{equation}
+P(x,\tau) = \psi_+ + \psi_-, \qquad
+Q_5(x,\tau) = \psi_+ - \psi_-,
+\end{equation}
+the total density and the \emph{chiral density}. The aggregate chiral charge
+is $\bar{Q}_5(\tau) = \int Q_5(x,\tau)\,dx$.
+
+\subsection{Telegraph dynamics}
+
+The field evolves under the coupled system
+\begin{align}
+\partial_\tau \psi_+ &= D\,\partial_x^2 \psi_+ - c\,\partial_x \psi_+
+  - \nu\,\partial_x \psi_+ - \kappa \psi_+ + \gamma \psi_- - r_d \psi_+,
+  \label{eq:psip}\\
+\partial_\tau \psi_- &= D\,\partial_x^2 \psi_- + c\,\partial_x \psi_-
+  - \nu\,\partial_x \psi_- - \kappa \psi_- + \gamma \psi_+ - r_d \psi_-,
+  \label{eq:psim}
+\end{align}
+with $D$ the diffusion coefficient, $c$ the propagation speed, $\kappa$ the
+flip (relaxation) rate, $\gamma$ the chiral mixing rate, $\nu$ the log-price
+drift, and $r_d$ the domestic rate entering as discounting. Setting
+$\gamma = \kappa$ conserves total probability up to discounting. In
+$(P, Q_5)$ variables, \eqref{eq:psip}--\eqref{eq:psim} become
+\begin{align}
+\partial_\tau P &= D\,\partial_x^2 P - c\,\partial_x Q_5 - \nu\,\partial_x P - r_d P,
+  \label{eq:Peq}\\
+\partial_\tau Q_5 &= D\,\partial_x^2 Q_5 - c\,\partial_x P - \nu\,\partial_x Q_5
+  - 2\kappa Q_5 - r_d Q_5.
+  \label{eq:Qeq}
+\end{align}
+For $D = \nu = r_d = 0$, eliminating $Q_5$ gives the classical telegraph
+equation
+\begin{equation}
+\partial_\tau^2 P + 2\kappa\,\partial_\tau P = c^2\,\partial_x^2 P,
+\end{equation}
+which interpolates between ballistic propagation at speed $c$ (small
+$\kappa$) and diffusion (large $\kappa$).
+
+\subsection{The Black--Scholes limit and the finite-$\kappa$ correction}
+
+As $\kappa \to \infty$ the chiral mode relaxes instantaneously. Setting
+$\partial_\tau Q_5 \approx 0$ and dropping terms small against $2\kappa Q_5$
+in \eqref{eq:Qeq} gives $Q_5 \approx -(c/2\kappa)\,\partial_x P$.
+Substituting into \eqref{eq:Peq},
+\begin{equation}
+\partial_\tau P = \Big(\underbrace{D + \tfrac{c^2}{2\kappa}}_{D_{\text{eff}}}\Big)\partial_x^2 P
+  - \nu\,\partial_x P - r_d P.
+\label{eq:bslimit}
+\end{equation}
+With $D = \sigma^2/2$ and $c = \sigma$ this is the exact Black--Scholes
+Fokker--Planck equation plus an excess-diffusion term. Since $c^2 = 2D$,
+\begin{equation}
+D_{\text{eff}} = D\big(1 + \kappa^{-1}\big),
+\qquad
+\sigma_{\text{eff}}^2 = \sigma^2\big(1 + \kappa^{-1}\big),
+\end{equation}
+so the finite-mass model carries a relative variance excess of exactly
+$1/\kappa$, vanishing in the diffusive limit. Skewness enters at order
+$1/\kappa$ through the asymmetric momentum sector. These are the intended
+non-Gaussian corrections.
+
+\subsection{Heston stochastic variance}
+
+The instantaneous variance $v(\tau)$ follows a CIR process,
+\begin{equation}
+dv = \kappa_H(\theta - v)\,d\tau + \xi \sqrt{v}\,dW_v,
+\end{equation}
+with mean-reversion speed $\kappa_H$, long-run variance $\theta$,
+vol-of-vol $\xi$, and $dW_v$ correlated with the price shock $dW_S$ at
+$\rho = \mathrm{corr}(dW_S, dW_v)$. It is integrated by a Milstein scheme
+with full truncation,
+\begin{equation}
+v_{n+1} = \max\!\Big(v_n + \kappa_H(\theta - v_n)\,\Delta\tau
+  + \xi\sqrt{v_n^+}\,\Delta W
+  + \tfrac{1}{4}\xi^2\big[(\Delta W)^2 - \Delta\tau\big],\ 0\Big),
+\end{equation}
+where $v_n^+ = \max(v_n, 0)$ and $\Delta W = z_n\sqrt{\Delta\tau}$ with
+$z_n \sim \mathcal{N}(0,1)$. Milstein gives strong order $1.0$ against
+Euler's $0.5$.
+
+\subsection{Variance decomposition: avoiding a double count}
+\label{sec:decomp}
+
+The Heston price shock decomposes into correlated and independent
+components,
+\begin{equation}
+dW_S = \rho\,dW_v + \sqrt{1-\rho^2}\,dW_\perp .
+\end{equation}
+The correlated part is applied separately as a path-conditional
+translation (Section~\ref{sec:lev}), so the PDE must evolve only the
+independent part. Using the full $v$ would double-count the variance
+$\rho^2 v$. The PDE coefficients are therefore
+\begin{equation}
+D(\tau) = \frac{(1-\rho^2)\,v(\tau)}{2},
+\qquad
+c(\tau) = \sqrt{(1-\rho^2)\,v(\tau)} .
+\label{eq:Dc}
+\end{equation}
+
+\subsection{Regime-dependent mass}
+
+The relaxation rate is made variance-dependent so that calm markets are
+more ballistic (trending, low $\kappa$) and stressed markets more diffusive,
+\begin{equation}
+\kappa(v) = \min\!\Big(\kappa_0 + \frac{\kappa_1}{v},\ \frac{1}{2\,\Delta\tau}\Big),
+\qquad \gamma = \kappa .
+\label{eq:kappa}
+\end{equation}
+The $\kappa_1/v$ term is singular as $v \to 0$; the cap is required for
+stability (Section~\ref{sec:stab}).
+
+\subsection{Kou jumps and the compensator}
+
+Jumps arrive as a Poisson process of intensity $\lambda$ per year. Each jump
+$Y$ in log-price has the double-exponential density
+\begin{equation}
+f_Y(y) = p\,\eta_+ e^{-\eta_+ y}\,\mathbf{1}_{\{y>0\}}
+       + (1-p)\,\eta_- e^{\eta_- y}\,\mathbf{1}_{\{y<0\}},
+\qquad \eta_+ > 1,\ \eta_- > 0 .
+\end{equation}
+Mean jump sizes are $1/\eta_+$ up and $1/\eta_-$ down; asymmetry
+$\eta_- < \eta_+$ encodes crash skew. The martingale compensator is
+\begin{equation}
+\zeta \;=\; \mathbb{E}\big[e^{Y} - 1\big]
+\;=\; \frac{p\,\eta_+}{\eta_+ - 1} + \frac{(1-p)\,\eta_-}{\eta_- + 1} - 1,
+\label{eq:comp}
+\end{equation}
+and $\lambda\zeta$ is subtracted from the drift. The condition $\eta_+ > 1$
+is necessary for $\mathbb{E}[e^Y]$ to exist and is enforced at construction.
+
+\subsection{Drift and the Garman--Kohlhagen boundary}
+
+Under the FX risk-neutral measure with domestic rate $r_d$ and foreign rate
+$r_f$, the carry is $r_d - r_f$ and the log-price drift is
+\begin{equation}
+\nu(\tau) = (r_d - r_f) - \tfrac{1}{2}v(\tau) - \lambda\zeta ,
+\label{eq:nu}
+\end{equation}
+which enforces $\mathbb{E}[S_T] = S_0\,e^{(r_d - r_f)T}$. Setting $r_f = 0$
+reduces the model to the equity convention. The reference density and call
+price against which the model is validated are Garman--Kohlhagen,
+\begin{equation}
+p_{\mathrm{GK}}(S) = \frac{1}{S\sigma\sqrt{2\pi T}}
+  \exp\!\left[-\frac{\big(\log(S/S_0) - (r_d - r_f - \tfrac{1}{2}\sigma^2)T\big)^2}
+  {2\sigma^2 T}\right],
+\end{equation}
+\begin{equation}
+C_{\mathrm{GK}} = S_0 e^{-r_f T}\Phi(d_1) - K e^{-r_d T}\Phi(d_2),
+\qquad
+d_{1,2} = \frac{\log(S_0/K) + \big(r_d - r_f \pm \tfrac{1}{2}\sigma^2\big)T}
+  {\sigma\sqrt{T}} .
+\end{equation}
+
+\subsection{Nested limits}
+
+The specification nests three known models exactly:
+$\kappa_0 \to \infty,\ \kappa_1 = \xi = \lambda = \rho = 0$ gives
+Black--Scholes; $\kappa_0 \to \infty,\ \kappa_1 = \lambda = 0$ gives Heston;
+$\xi = \lambda = \rho = 0$ gives the deterministic telegraph model. These
+limits are the basis of the validation suite.
+
+\section{Numerical Scheme}
+\label{sec:num}
+
+The solver is Monte Carlo on the outer loop (variance paths) and PDE on the
+inner loop (the spinor field conditional on a variance path).
+
+\subsection{Lattice and initial condition}
+
+The domain is $x \in [-x_h, x_h]$ with
+$x_h = w\sigma_0\sqrt{T} + \tfrac{1}{2}$, $w$ half-widths in standard
+deviations (default $6$), discretised at $N$ sites with spacing
+$\Delta x = 2x_h/(N-1)$ and Dirichlet boundaries. The initial condition is a
+Gaussian of width $\Delta x$ centred at $x = 0$, split asymmetrically,
+\begin{equation}
+\psi_\pm(x, 0) \;\propto\; \theta_{\pm}\,
+  \exp\!\left(-\frac{x^2}{2\Delta x^2}\right),
+\qquad
+\theta_+ = \theta_{ic},\quad \theta_- = 1 - \theta_{ic},
+\end{equation}
+\begin{equation}
+\theta_{ic} = \operatorname{clip}\!\big(\tfrac{1}{2} + \tfrac{1}{2}\delta_{cp},\ 0.01,\ 0.99\big),
+\label{eq:thetaic}
+\end{equation}
+normalised so $\int P\,dx = 1$. A one-cell width is the narrowest smearing
+that yields a smooth density while keeping the artificial initial variance
+$O(\Delta x^2)$ far below $\sigma^2 T$; a width of two or more cells injects
+$3$--$7\%$ excess variance at short horizons.
+
+\subsection{Spatial discretisation and integrator}
+
+With $f_j = f(x_j)$, the operators are
+\begin{equation}
+\Delta^2 f_j = \frac{f_{j+1} - 2f_j + f_{j-1}}{\Delta x^2},
+\qquad
+\nabla^0 f_j = \frac{f_{j+1} - f_{j-1}}{2\Delta x} .
+\end{equation}
+Both the wave term and the drift term use the second-order central
+difference $\nabla^0$. First-order upwinding would be stable but introduces
+numerical diffusion $D_{\text{num}} = c\,\Delta x/2$, which at realistic
+$\Delta x$ is comparable to the physical $D$ and would corrupt the very
+non-Gaussian corrections the model exists to produce. The Wilson diffusion
+term already damps the high-wavenumber modes that make central differencing
+unstable in pure advection. Time integration is classical fourth-order
+Runge--Kutta on the semi-discrete system.
+
+\subsection{Stability}
+\label{sec:stab}
+
+Three constraints are enforced. The CFL condition for the explicit scheme
+is
+\begin{equation}
+\Delta\tau \;\le\; 0.45\,\frac{\Delta x^2}{2D + c\,\Delta x} .
+\label{eq:cfl}
+\end{equation}
+The global step is set from a stationary worst-case variance. The CIR
+stationary distribution is Gamma with standard deviation
+$\sigma_v = \xi\sqrt{\theta/(2\kappa_H)}$, so we take
+$v_{\text{ref}} = \max(\theta + 2\sigma_v,\ v_0,\ \theta)$ and size
+$\Delta\tau$ from \eqref{eq:cfl} at $v_{\text{ref}}$. When a realised path
+excursion exceeds $v_{\text{ref}}$, the step is subdivided adaptively into
+$n_{\text{sub}} = \lceil \Delta\tau / \Delta\tau_{\text{CFL}}(v_i)\rceil$
+substeps, capped at $32$.
+
+Second, the reaction term $-2\kappa$ is stiff, with RK4 absolute-stability
+limit $|2\kappa h| < 2.785$. The cap in \eqref{eq:kappa} at
+$\kappa \le 1/(2\Delta\tau)$ gives $|2\kappa h| \le 1$, a $2.8\times$
+margin, while still permitting the large $\kappa_0$ needed for
+Black--Scholes recovery tests.
+
+Third, the drift is clamped at $|\nu| \le \Delta x/(2\Delta\tau)$ as a
+sanity bound; with \eqref{eq:nu} it is never binding in practice.
+
+\subsection{Leverage as a grid translation}
+\label{sec:lev}
+
+The correlated shock contributes a path-conditional drift
+$\rho\sqrt{v}\,dW_v$. Discretising it as a PDE advection term would impose a
+CFL constraint scaling with $|\rho|\sqrt{v}$, which at realistic FX
+parameters dominates \eqref{eq:cfl} and forces a much smaller step. Instead
+it is applied exactly, as a translation of the field after each step:
+\begin{equation}
+\Delta x_{\text{lev}} = \rho\,\sqrt{v_i}\;z_i\,\sqrt{\Delta\tau},
+\end{equation}
+implemented by sub-cell linear interpolation. Writing
+$\Delta x_{\text{lev}}/\Delta x = n_s + \phi$ with $n_s = \lfloor\cdot\rfloor$
+and $\phi \in [0,1)$,
+\begin{equation}
+\tilde{\psi}_j = (1-\phi)\,\psi_{j - n_s} + \phi\,\psi_{j - n_s - 1} .
+\label{eq:shift}
+\end{equation}
+Translation is unconditionally stable and mathematically equivalent to the
+advection term, removing the constraint entirely. Kou jumps are applied by
+the same operator, sampling $n \sim \text{Poisson}(\lambda\Delta\tau)$ jumps
+per step and translating by each $Y$.
+
+\subsection{Monte Carlo accumulation}
+
+For each of $N_p$ variance paths the field is evolved to $T$ and accumulated
+with weight equal to its retained norm $\|\psi^{(k)}\|_1$, rather than
+normalising each path first:
+\begin{equation}
+\bar{\psi}_j = \frac{\sum_{k} \psi^{(k)}_j}{\sum_{k}\|\psi^{(k)}\|_1},
+\qquad \|\psi^{(k)}\|_1 = \textstyle\sum_j \big(\psi^{(k)}_{+,j} + \psi^{(k)}_{-,j}\big)\Delta x .
+\end{equation}
+Per-path normalisation divides by a near-zero norm on paths that have leaked
+off the domain, amplifying numerical noise catastrophically;
+weight-based accumulation lets such paths contribute in proportion to the
+mass they retain. Since total mass decays as $e^{-r_d T}$ under discounting,
+boundary leakage is diagnosed as
+\begin{equation}
+\text{mass loss} = \max\!\Big(0,\ 1 - \frac{\int \bar{P}\,dx}{e^{-r_d T}}\Big).
+\end{equation}
+
+\section{Validation}
+\label{sec:val}
+
+All results below were regenerated from the current build. Test~1 fixes
+$\xi = \lambda = \rho = 0$ and $\kappa_0 = 500$, where the model must
+reproduce Garman--Kohlhagen exactly, and refines the lattice
+(Table~\ref{tab:conv}). The relative call-price error falls by roughly a
+factor of three per doubling of $N$ over the first two refinements and
+reaches $0.15\%$ at $N = 1600$.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{rccccc}
+\toprule
+$N$ & $\mathbb{E}[S_T]$ & GK forward & $C_{\text{DHJ}}$ & $C_{\text{GK}}$ & rel.\ err.\\
+\midrule
+200  & 1.001063 & 1.001042 & 0.010286 & 0.009935 & 3.54\,\% \\
+400  & 1.001048 & 1.001042 & 0.010027 & 0.009935 & 0.93\,\% \\
+800  & 1.001044 & 1.001042 & 0.009965 & 0.009935 & 0.30\,\% \\
+1600 & 1.001043 & 1.001042 & 0.009950 & 0.009935 & 0.15\,\% \\
+\bottomrule
+\end{tabular}
+\caption{Garman--Kohlhagen recovery against lattice resolution.
+$S_0=1$, $\sigma=0.082$, $r_d=0.0525$, $r_f=0.0400$, $T=1/12$.}
+\label{tab:conv}
+\end{table}
+
+Test~2 sweeps $\kappa_0 \in \{10, \dots, 1000\}$ at $N=400$ and confirms the
+limit \eqref{eq:bslimit}: relative error falls monotonically
+$3.29\% \to 1.68\% \to 1.29\% \to 1.07\% \to 0.93\% \to 0.89\%$, with zero
+negative density cells throughout. The residual at large $\kappa_0$ is the
+$N=400$ discretisation floor from Table~\ref{tab:conv}, not a limit failure.
+
+Test~3 checks the martingale condition across horizons and vol-of-vol.
+Relative deviations of $\mathbb{E}[S_T]$ from $S_0 e^{(r_d-r_f)T}$ are
+$0.003\%$ ($T=30$d, $\xi=0$), $0.002\%$ ($30$d, $\xi=0.3$), $0.016\%$
+($91$d, $\xi=0.3$) and $0.001\%$ ($30$d, $\kappa_0=50$). Test~4 repeats this
+with jumps active at $\lambda \in \{1,3,5,10\}$, verifying the compensator
+\eqref{eq:comp}: errors are $0.015\%$, $0.071\%$, $0.014\%$, $0.019\%$,
+all within Monte Carlo error at $N_p = 300$.
+
+Test~5 finds zero negative density cells across eight configurations
+spanning $N \in [200, 800]$, $T \in \{1, 3\}$ months, high $\xi$ and
+$\lambda$, and $\rho = -0.6$. Test~6 measures boundary mass loss at
+$0.0000\%$ for all four standard configurations. The model is, as a
+numerical implementation of its own specification, correct.
+
+\section{Signal Extraction, and Where It Fails}
+\label{sec:sig}
+
+\subsection{The extraction layer}
+
+Three quantities were read from the solved density. The probability of
+finishing above spot,
+\begin{equation}
+\Pi_{\uparrow} \;=\; \int_{S_0}^{\infty} p_{\mathrm{DHJ}}(S)\,dS
+\;\approx\; \sum_{j\,:\,S_j \ge S_0} p_j\,(S_{j+1} - S_j),
+\end{equation}
+the expected move $\mathbb{E}[S_T] - S_0$, and the aggregate chiral charge
+$\bar{Q}_5(T)$, interpreted as a momentum or sentiment proxy. The initial
+asymmetry was seeded from the $14$-period RSI with a MACD agreement filter,
+\begin{equation}
+\delta_{cp} = \operatorname{clip}\!\left(\frac{\mathrm{RSI} - 50}{100}
+  \cdot \big(1 - \tfrac{1}{2}\mathbf{1}_{\{\mathrm{sgn}(\mathrm{RSI}-50)\,\neq\,\mathrm{sgn}(\mathrm{MACD}_h)\}}\big),
+  \ -\tfrac{1}{2},\ \tfrac{1}{2}\right),
+\label{eq:deltacp}
+\end{equation}
+and signals were assigned by thresholds on $\bar{Q}_5$ with confirmation
+from $\Pi_\uparrow$: strong signals at $|\bar{Q}_5| > 0.15$ with
+$\Pi_\uparrow$ confirming beyond $0.52$ or $0.48$, mild signals at
+$|\bar{Q}_5| > 0.05$, otherwise neutral.
+
+\subsection{The chiral charge is not a model output}
+
+\begin{proposition}
+\label{prop:q5}
+Under Dirichlet boundaries and $\gamma = \kappa$, the aggregate chiral
+charge obeys, exactly,
+\begin{equation}
+\bar{Q}_5(T) \;=\; \delta_{cp}\;e^{-(2\kappa + r_d)T}.
+\label{eq:q5closed}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Integrate \eqref{eq:Qeq} over $x$. The terms
+$\int \partial_x^2 Q_5\,dx$, $\int \partial_x P\,dx$ and
+$\int \partial_x Q_5\,dx$ are boundary terms and vanish under Dirichlet
+conditions, leaving
+$\tfrac{d}{d\tau}\bar{Q}_5 = -(2\kappa + r_d)\,\bar{Q}_5$.
+The leverage and jump operators are translations \eqref{eq:shift}, which
+preserve the integral, so they do not enter. At $\tau = 0$, by
+\eqref{eq:thetaic}, $\bar{Q}_5(0) = \theta_+ - \theta_- = 2\theta_{ic} - 1
+= \delta_{cp}$. Integrating gives \eqref{eq:q5closed}.
+\end{proof}
+
+We verified \eqref{eq:q5closed} against the compiled engine at
+$\delta_{cp} \in \{-0.5, \dots, 0.5\}$, $\sigma = 0.082$, $T = 1/365$,
+$\kappa_0 = 1.0$, $\kappa_1 = 0.002$, giving
+$\kappa = 1.2974$ and a predicted factor $e^{-(2\kappa+r_d)T} = 0.992773$.
+The ratio of measured to predicted charge was $1.00000$ at every point, to
+all six digits reported.
+
+The consequence is severe. The chiral charge, which determined the
+direction of every signal the model emitted, is the RSI-derived seed
+multiplied by a deterministic scalar within $0.8\%$ of unity at a one-day
+horizon. It contains no information from the Heston path, the jump process,
+the leverage coupling, or the PDE evolution. Inverting the thresholds
+through \eqref{eq:deltacp}, the signal rule was exactly
+\begin{equation}
+\text{STRONG} \iff |\mathrm{RSI} - 50| > 15.11,
+\qquad
+\text{MILD} \iff |\mathrm{RSI} - 50| > 5.04,
+\end{equation}
+doubling to $30.2$ and $10.1$ when MACD disagreed. A lattice PDE with
+stochastic variance and compensated jumps was computing
+$\mathrm{RSI} > 65$.
+
+This is a specification error of a particular and instructive kind. Nothing
+in Section~\ref{sec:val} could have caught it: the model was correct, the
+solver was correct, and the quantity being read out was simply not a
+function of either. The conserved-quantity analysis that proves
+\eqref{eq:q5closed} takes one page and was not performed until after
+deployment.
+
+\section{Empirical Results}
+\label{sec:emp}
+
+The model ran in production against a live FX feed, logging a forecast per
+instrument per hourly cycle with a one-day evaluation horizon, scored on
+realised direction. Accuracy was assessed with the Wilson score lower bound
+at $z = 1.64$,
+\begin{equation}
+p_{\text{LB}} = \frac{\hat{p} + \frac{z^2}{2n}
+  - z\sqrt{\frac{\hat{p}(1-\hat{p})}{n} + \frac{z^2}{4n^2}}}
+  {1 + \frac{z^2}{n}},
+\end{equation}
+which is preferred to the normal interval because it does not degenerate at
+small $n$ or extreme $\hat p$: a cell at $4/5$ carries $p_{\text{LB}} \approx 0.38$
+and is correctly not mistaken for an edge.
+
+Over more than $2{,}500$ evaluated one-day forecasts the model achieved
+$49$--$50\%$ directional accuracy, indistinguishable from a coin flip. A
+conditional analysis partitioned forecasts into cells by signal strength,
+volatility regime, session and instrument. Several cells showed in-sample
+accuracy of $66$--$77\%$; on out-of-sample data the same cells realised
+$15$--$31\%$. The sign reversal, rather than mere decay toward $50\%$, is
+the signature of fitting noise across a large cell count, and is what
+motivated adopting pre-registered interpretation rules for all subsequent
+tests. An independent five-voter ensemble built to replace the model scored
+$49.8\%$ on $n = 325$ out-of-sample forecasts, $p_{\text{LB}} = 0.453$.
+
+As a positive control, the same evaluation harness applied to index
+buy-and-hold recovered a Sharpe ratio of $0.55$, confirming that the
+detector was capable of finding a real effect where one exists.
+
+\section{Why the Null Result Was Structural}
+\label{sec:why}
+
+Two arguments, one specific and one general, show the outcome was not a
+calibration failure.
+
+The specific argument is Proposition~\ref{prop:q5}: the directional signal
+was an RSI threshold rule, and momentum rules of that form in liquid FX have
+been repeatedly documented to carry no exploitable edge net of costs.
+
+The general argument is that the model was, by construction, a martingale.
+Test~3 confirms $\mathbb{E}[S_T] = S_0 e^{(r_d - r_f)T}$ to $0.003\%$. Its
+entire directional content is therefore the carry, and nothing else. Under
+the model's own log-normal $\mathbb{Q}$-density, the implied probability of
+an up move is
+\begin{equation}
+\Pi_\uparrow^{\mathbb{Q}} = \Phi\!\left(\frac{m}{s}\right),
+\qquad
+m = \big(r_d - r_f - \tfrac{1}{2}\sigma^2\big)T,
+\qquad
+s = \sigma\sqrt{T}.
+\end{equation}
+Against a symmetric entry with a one-standard-deviation target and stop
+$d = S_0\sigma\sqrt{T}$ and round-trip cost $C$, expectancy is
+$d(2\Pi_\uparrow - 1) - C$, so the break-even accuracy is
+\begin{equation}
+\Pi^{*} = \tfrac{1}{2} + \frac{C}{2d}.
+\end{equation}
+Table~\ref{tab:horizon} evaluates both for EUR/USD at $\sigma = 0.082$,
+$r_d - r_f = 125$\,bp, $S_0 = 1.08$, $C = 1.2$ pips.
+
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{lccrr}
+\toprule
+Horizon & $\Pi_\uparrow^{\mathbb{Q}}$ & $\Pi^{*}$ (break-even)
+  & edge (pp) & $\mathbb{E}$[pips] \\
+\midrule
+1 day    & 0.5028 & 0.5108 & $-0.80$ & $-0.89$ \\
+1 week   & 0.5063 & 0.5048 & $+0.15$ & $+0.36$ \\
+1 month  & 0.5128 & 0.5023 & $+1.05$ & $+5.36$ \\
+3 months & 0.5222 & 0.5014 & $+2.09$ & $+18.48$ \\
+1 year   & 0.5444 & 0.5007 & $+4.37$ & $+77.38$ \\
+\bottomrule
+\end{tabular}
+\caption{Achievable directional accuracy under the model's own risk-neutral
+density versus the accuracy required to break even after spread.}
+\label{tab:horizon}
+\end{table}
+
+At the one-day horizon at which the model was deployed, its own maximum
+attainable accuracy of $50.28\%$ falls $0.80$ percentage points short of the
+$51.08\%$ required to cover the spread, an expectancy of $-0.89$ pips per
+trade. The observed $49$--$50\%$ is fully consistent with this bound. No
+improvement in calibration, lattice resolution or jump parameters could have
+changed it, because the deficit is a property of the risk-neutral
+specification rather than of its numerical solution. The result was
+derivable in closed form before a single forecast was logged, from
+quantities the validation suite was already reporting.
+
+Table~\ref{tab:horizon} also shows the diagnosis. The gross edge turns
+positive beyond roughly one week and grows with horizon, because the carry
+signal accumulates linearly in $T$ while noise grows as $\sqrt{T}$ and the
+spread is paid once. The model was not wrong; it was deployed at the one
+horizon where its signal is structurally smaller than its transaction cost.
+That positive gross expectancy should not be read as free money: at longer
+horizons this is simply the carry trade, whose returns are widely understood
+as compensation for crash risk. Our own backtests over 2014--2026 found
+time-series carry at Sharpe $0.00$ and cross-sectional carry at
+$0.14 \pm 0.26$, consistent with a risk premium that is real but not large
+relative to its variance.
+
+\section{Discussion}
+
+Three lessons generalise beyond this model.
+
+\emph{Validation proves consistency, not usefulness.} Every test in
+Section~\ref{sec:val} asks whether the implementation matches the
+specification. None asks whether the specification answers the question
+being posed. A model can pass a complete numerical validation suite and
+still be structurally incapable of the task it was built for, and ours did.
+
+\emph{Risk-neutral machinery does not transfer to directional forecasting.}
+The martingale property is the defining virtue of a pricing model and a
+disqualifying defect in a forecaster. Practitioners moving pricing code into
+a signal pipeline should state the measure change explicitly and estimate
+it, rather than reading $\mathbb{P}$-measure conclusions off a
+$\mathbb{Q}$-measure density.
+
+\emph{Conserved quantities should be checked before deployment, not after.}
+Proposition~\ref{prop:q5} is elementary. Had the integral of \eqref{eq:Qeq}
+been taken at specification time, the entire signal layer would have been
+recognised as a reparameterised RSI before any code was written.
+
+The model retains genuine value in the role it was designed for. It produces
+a validated, arbitrage-consistent transition density with tunable tails and
+skew, it prices European options against a Garman--Kohlhagen benchmark to
+sub-percent accuracy, and the parameters $\kappa$, $\xi$, $\rho$ and
+$\lambda$ give independent control over excess kurtosis and skew for
+volatility-surface work. The natural next application is variance
+forecasting rather than direction: returns in liquid FX appear
+unforecastable at short horizons, but realised variance is strongly
+persistent, and the model's variance layer is the component the validation
+suite most directly certified.
+
+\begin{thebibliography}{99}
+\small
+\setlength{\itemsep}{0pt}\setlength{\parsep}{0pt}\setlength{\parskip}{0pt}
+\bibitem{bailey2014} Bailey, D.~H. and M.~L\'opez de Prado (2014).
+  The deflated Sharpe ratio. \emph{Journal of Portfolio Management} 40(5), 94--107.
+\bibitem{bns2004} Barndorff-Nielsen, O.~E. and N.~Shephard (2004).
+  Power and bipower variation with stochastic volatility and jumps.
+  \emph{Journal of Financial Econometrics} 2(1), 1--37.
+\bibitem{bs1973} Black, F. and M.~Scholes (1973). The pricing of options and
+  corporate liabilities. \emph{Journal of Political Economy} 81(3), 637--654.
+\bibitem{corsi2009} Corsi, F. (2009). A simple approximate long-memory model
+  of realized volatility. \emph{Journal of Financial Econometrics} 7(2), 174--196.
+\bibitem{fama1970} Fama, E.~F. (1970). Efficient capital markets.
+  \emph{Journal of Finance} 25(2), 383--417.
+\bibitem{gk1983} Garman, M.~B. and S.~W.~Kohlhagen (1983). Foreign currency
+  option values. \emph{Journal of International Money and Finance} 2(3), 231--237.
+\bibitem{goldstein1951} Goldstein, S. (1951). On diffusion by discontinuous
+  movements and on the telegraph equation. \emph{Quarterly Journal of
+  Mechanics and Applied Mathematics} 4(2), 129--156.
+\bibitem{harvey2016} Harvey, C.~R., Y.~Liu and H.~Zhu (2016).
+  $\ldots$ and the cross-section of expected returns.
+  \emph{Review of Financial Studies} 29(1), 5--68.
+\bibitem{heston1993} Heston, S.~L. (1993). A closed-form solution for options
+  with stochastic volatility. \emph{Review of Financial Studies} 6(2), 327--343.
+\bibitem{kac1974} Kac, M. (1974). A stochastic model related to the telegrapher's
+  equation. \emph{Rocky Mountain Journal of Mathematics} 4(3), 497--509.
+\bibitem{kou2002} Kou, S.~G. (2002). A jump-diffusion model for option pricing.
+  \emph{Management Science} 48(8), 1086--1101.
+\bibitem{lord2010} Lord, R., R.~Koekkoek and D.~van Dijk (2010). A comparison of
+  biased simulation schemes for stochastic volatility models.
+  \emph{Quantitative Finance} 10(2), 177--194.
+\bibitem{meese1983} Meese, R.~A. and K.~Rogoff (1983). Empirical exchange rate
+  models of the seventies. \emph{Journal of International Economics} 14(1--2), 3--24.
+\bibitem{milstein1975} Milstein, G.~N. (1975). Approximate integration of
+  stochastic differential equations. \emph{Theory of Probability and its
+  Applications} 19(3), 557--562.
+\bibitem{stw1999} Sullivan, R., A.~Timmermann and H.~White (1999). Data-snooping,
+  technical trading rule performance, and the bootstrap.
+  \emph{Journal of Finance} 54(5), 1647--1691.
+\bibitem{white2000} White, H. (2000). A reality check for data snooping.
+  \emph{Econometrica} 68(5), 1097--1126.
+\bibitem{wilson1927} Wilson, E.~B. (1927). Probable inference, the law of
+  succession, and statistical inference. \emph{Journal of the American
+  Statistical Association} 22(158), 209--212.
+\bibitem{wilson1974} Wilson, K.~G. (1974). Confinement of quarks.
+  \emph{Physical Review D} 10(8), 2445--2459.
+\end{thebibliography}
+
+\end{document}
